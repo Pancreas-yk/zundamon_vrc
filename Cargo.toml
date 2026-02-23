@@ -1,0 +1,20 @@
+[package]
+name = "zundamon_vrc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rodio = "0.20"
+anyhow = "1"
+async-trait = "0.1"
+directories = "6"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rfd = "0.15"

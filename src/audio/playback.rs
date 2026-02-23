@@ -5,7 +5,17 @@ use std::process::Command;
 
 /// Try to play WAV data through rodio by finding the virtual device via cpal.
 /// Falls back to paplay subprocess if rodio can't find the device.
-pub fn play_wav(wav_data: Vec<u8>, device_name: &str) -> Result<()> {
+/// If `monitor` is true, also plays to the default output device for self-monitoring.
+pub fn play_wav(wav_data: Vec<u8>, device_name: &str, monitor: bool) -> Result<()> {
+    if monitor {
+        let data_clone = wav_data.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = play_on_default_output(&data_clone) {
+                tracing::warn!("Monitor playback failed: {}", e);
+            }
+        });
+    }
+
     match play_with_rodio(&wav_data, device_name) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -13,6 +23,17 @@ pub fn play_wav(wav_data: Vec<u8>, device_name: &str) -> Result<()> {
             play_with_paplay(&wav_data, device_name)
         }
     }
+}
+
+/// Play WAV data on the default output device (speakers/headphones) for self-monitoring.
+fn play_on_default_output(wav_data: &[u8]) -> Result<()> {
+    let (_stream, handle) = OutputStream::try_default().context("Failed to open default output")?;
+    let sink = Sink::try_new(&handle).context("Failed to create sink for monitor")?;
+    let cursor = Cursor::new(wav_data.to_vec());
+    let source = rodio::Decoder::new(cursor).context("Failed to decode WAV for monitor")?;
+    sink.append(source);
+    sink.sleep_until_end();
+    Ok(())
 }
 
 fn play_with_rodio(wav_data: &[u8], device_name: &str) -> Result<()> {

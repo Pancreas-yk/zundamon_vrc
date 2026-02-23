@@ -89,6 +89,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
+        // Audio monitoring
+        ui.collapsing("オーディオ", |ui| {
+            ui.checkbox(
+                &mut state.config.monitor_audio,
+                "自分にも音声を再生（モニター）",
+            );
+            ui.label("有効にすると、仮想マイクに加えてスピーカーからも音声が聞こえます");
+        });
+
+        ui.add_space(8.0);
+
         // Virtual device
         ui.collapsing("仮想デバイス", |ui| {
             ui.horizontal(|ui| {

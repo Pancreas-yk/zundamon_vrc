@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub synth_params: SynthParamsConfig,
     pub speaker_id: u32,
     pub virtual_device_name: String,
+    pub monitor_audio: bool,
     pub templates: Vec<String>,
 }
 
@@ -43,6 +44,7 @@ impl Default for AppConfig {
             auto_launch_voicevox: false,
             synth_params: SynthParamsConfig::default(),
             speaker_id: 3, // ずんだもん (ノーマル)
+            monitor_audio: true,
             virtual_device_name: "ZundamonVRC".to_string(),
             templates: vec![
                 "こんにちは！".to_string(),

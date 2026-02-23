@@ -32,8 +32,8 @@ impl AudioManager {
         &self.device.sink_name
     }
 
-    pub fn play_wav(&self, wav_data: Vec<u8>) -> Result<()> {
+    pub fn play_wav(&self, wav_data: Vec<u8>, monitor: bool) -> Result<()> {
         let name = self.device.sink_name.clone();
-        playback::play_wav(wav_data, &name)
+        playback::play_wav(wav_data, &name, monitor)
     }
 }

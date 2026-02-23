@@ -153,8 +153,10 @@ impl ZundamonApp {
                     self.state.is_synthesizing = false;
                     self.state.last_error = None;
                     let device_name = self.state.config.virtual_device_name.clone();
+                    let monitor = self.state.config.monitor_audio;
                     std::thread::spawn(move || {
-                        if let Err(e) = crate::audio::playback::play_wav(wav, &device_name) {
+                        if let Err(e) = crate::audio::playback::play_wav(wav, &device_name, monitor)
+                        {
                             tracing::error!("Playback error: {}", e);
                         }
                     });

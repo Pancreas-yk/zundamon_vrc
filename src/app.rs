@@ -1,6 +1,7 @@
 use crate::audio::AudioManager;
 use crate::config::AppConfig;
 use crate::tts::types::{Speaker, SynthParams};
+use crate::tts::voicevox::VoicevoxEngine;
 use crate::tts::TtsManager;
 use crate::ui::Screen;
 
@@ -23,6 +24,8 @@ enum UiMessage {
     SpeakersLoaded(Vec<Speaker>),
     HealthCheckResult(bool),
     Error(String),
+    UserDictLoaded(crate::tts::types::UserDict),
+    UserDictUpdated,
 }
 
 /// Commands from the UI thread to the tokio runtime
@@ -30,6 +33,9 @@ pub enum TtsCommand {
     Synthesize { text: String, params: SynthParams },
     LoadSpeakers,
     HealthCheck,
+    LoadUserDict,
+    AddUserDictWord { surface: String, pronunciation: String },
+    DeleteUserDictWord { uuid: String },
 }
 
 /// Shared mutable state accessed by UI drawing functions
@@ -50,6 +56,12 @@ pub struct AppState {
     pub voicevox_launching: bool,
     pub current_screen: Screen,
     pub new_template_text: String,
+    pub user_dict: Vec<(String, String, String)>, // (uuid, surface, pronunciation)
+    pub new_dict_surface: String,
+    pub new_dict_pronunciation: String,
+    pub pending_load_user_dict: bool,
+    pub pending_add_dict_word: Option<(String, String)>,
+    pub pending_delete_dict_word: Option<String>,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundamon-voicevox";
@@ -84,7 +96,8 @@ impl ZundamonApp {
             && audio_manager.device_exists().unwrap_or(false);
 
         // Spawn the TTS command processing loop on tokio
-        rt.spawn(Self::tts_loop(tts_manager, tts_rx, ui_tx));
+        let voicevox_url = config.voicevox_url.clone();
+        rt.spawn(Self::tts_loop(tts_manager, voicevox_url, tts_rx, ui_tx));
 
         // Trigger initial health check + speaker load
         let _ = tts_tx.send(TtsCommand::HealthCheck);
@@ -108,6 +121,12 @@ impl ZundamonApp {
                 voicevox_launching: false,
                 current_screen: Screen::Input,
                 new_template_text: String::new(),
+                user_dict: Vec::new(),
+                new_dict_surface: String::new(),
+                new_dict_pronunciation: String::new(),
+                pending_load_user_dict: false,
+                pending_add_dict_word: None,
+                pending_delete_dict_word: None,
             },
             audio_manager,
             ui_rx,
@@ -121,9 +140,11 @@ impl ZundamonApp {
 
     async fn tts_loop(
         tts: TtsManager,
+        voicevox_url: String,
         rx: mpsc::Receiver<TtsCommand>,
         tx: mpsc::Sender<UiMessage>,
     ) {
+        let dict_engine = VoicevoxEngine::new(&voicevox_url);
         while let Ok(cmd) = rx.recv() {
             match cmd {
                 TtsCommand::Synthesize { text, params } => {
@@ -155,6 +176,24 @@ impl ZundamonApp {
                         let _ = tx.send(UiMessage::HealthCheckResult(false));
                     }
                 },
+                TtsCommand::LoadUserDict => {
+                    match dict_engine.list_user_dict().await {
+                        Ok(dict) => { let _ = tx.send(UiMessage::UserDictLoaded(dict)); }
+                        Err(e) => { let _ = tx.send(UiMessage::Error(format!("辞書取得失敗: {}", e))); }
+                    }
+                }
+                TtsCommand::AddUserDictWord { surface, pronunciation } => {
+                    match dict_engine.add_user_dict_word(&surface, &pronunciation).await {
+                        Ok(_) => { let _ = tx.send(UiMessage::UserDictUpdated); }
+                        Err(e) => { let _ = tx.send(UiMessage::Error(format!("辞書登録失敗: {}", e))); }
+                    }
+                }
+                TtsCommand::DeleteUserDictWord { uuid } => {
+                    match dict_engine.delete_user_dict_word(&uuid).await {
+                        Ok(()) => { let _ = tx.send(UiMessage::UserDictUpdated); }
+                        Err(e) => { let _ = tx.send(UiMessage::Error(format!("辞書削除失敗: {}", e))); }
+                    }
+                }
             }
         }
     }
@@ -218,6 +257,16 @@ impl ZundamonApp {
                 UiMessage::Error(err) => {
                     self.state.is_synthesizing = false;
                     self.state.last_error = Some(err);
+                }
+                UiMessage::UserDictLoaded(dict) => {
+                    self.state.user_dict = dict
+                        .into_iter()
+                        .map(|(uuid, word)| (uuid, word.surface, word.pronunciation))
+                        .collect();
+                    self.state.user_dict.sort_by(|a, b| a.1.cmp(&b.1));
+                }
+                UiMessage::UserDictUpdated => {
+                    let _ = self.tts_tx.send(TtsCommand::LoadUserDict);
                 }
             }
         }
@@ -283,6 +332,17 @@ impl ZundamonApp {
                     self.state.last_error = Some(format!("デバイス削除失敗: {}", e));
                 }
             }
+        }
+
+        if self.state.pending_load_user_dict {
+            self.state.pending_load_user_dict = false;
+            let _ = self.tts_tx.send(TtsCommand::LoadUserDict);
+        }
+        if let Some((surface, pronunciation)) = self.state.pending_add_dict_word.take() {
+            let _ = self.tts_tx.send(TtsCommand::AddUserDictWord { surface, pronunciation });
+        }
+        if let Some(uuid) = self.state.pending_delete_dict_word.take() {
+            let _ = self.tts_tx.send(TtsCommand::DeleteUserDictWord { uuid });
         }
     }
 

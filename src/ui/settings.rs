@@ -89,6 +89,53 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
+        ui.collapsing("ユーザー辞書", |ui| {
+            if state.voicevox_connected {
+                if ui.button("辞書を読み込む").clicked() {
+                    state.pending_load_user_dict = true;
+                }
+                ui.add_space(4.0);
+
+                let mut to_delete = None;
+                for (uuid, surface, pronunciation) in &state.user_dict {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} → {}", surface, pronunciation));
+                        if ui.small_button("削除").clicked() {
+                            to_delete = Some(uuid.clone());
+                        }
+                    });
+                }
+                if let Some(uuid) = to_delete {
+                    state.pending_delete_dict_word = Some(uuid);
+                }
+
+                ui.add_space(4.0);
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    ui.label("表記:");
+                    ui.add(egui::TextEdit::singleline(&mut state.new_dict_surface).desired_width(100.0));
+                    ui.label("読み:");
+                    ui.add(egui::TextEdit::singleline(&mut state.new_dict_pronunciation).desired_width(100.0));
+                    if ui.button("追加").clicked()
+                        && !state.new_dict_surface.trim().is_empty()
+                        && !state.new_dict_pronunciation.trim().is_empty()
+                    {
+                        state.pending_add_dict_word = Some((
+                            state.new_dict_surface.trim().to_string(),
+                            state.new_dict_pronunciation.trim().to_string(),
+                        ));
+                        state.new_dict_surface.clear();
+                        state.new_dict_pronunciation.clear();
+                    }
+                });
+            } else {
+                ui.label("VOICEVOXに接続してください");
+            }
+        });
+
+        ui.add_space(8.0);
+
         // Audio monitoring
         ui.collapsing("オーディオ", |ui| {
             ui.checkbox(

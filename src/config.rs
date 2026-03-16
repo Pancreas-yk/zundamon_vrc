@@ -14,6 +14,13 @@ pub struct AppConfig {
     pub virtual_device_name: String,
     pub monitor_audio: bool,
     pub templates: Vec<String>,
+    pub osc_enabled: bool,
+    pub osc_address: String,
+    pub osc_port: u16,
+    pub soundboard_path: String,
+    pub echo_enabled: bool,
+    pub echo_delay_ms: u32,
+    pub echo_decay: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +59,15 @@ impl Default for AppConfig {
                 "おつかれさまなのだ！".to_string(),
                 "了解なのだ！".to_string(),
             ],
+            osc_enabled: false,
+            osc_address: "127.0.0.1".to_string(),
+            osc_port: 9000,
+            soundboard_path: ProjectDirs::from("", "", "zundamon_vrc")
+                .map(|d| d.config_dir().join("sounds").to_string_lossy().to_string())
+                .unwrap_or_else(|| "sounds".to_string()),
+            echo_enabled: false,
+            echo_delay_ms: 200,
+            echo_decay: 0.4,
         }
     }
 }

@@ -72,6 +72,11 @@ pub struct AppState {
     pub media_deps_checked: bool,
     pub media_has_ytdlp: bool,
     pub media_has_ffmpeg: bool,
+    pub sink_inputs: Vec<crate::media::desktop_capture::SinkInput>,
+    pub pending_refresh_sink_inputs: bool,
+    pub pending_start_capture: Option<(u32, String)>,
+    pub pending_stop_capture: bool,
+    pub is_capturing: bool,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundamon-voicevox";
@@ -86,6 +91,7 @@ pub struct ZundamonApp {
     last_health_check: Instant,
     pub is_playing: Arc<AtomicBool>,
     url_player: crate::media::url_player::UrlPlayer,
+    desktop_capture: crate::media::desktop_capture::DesktopCapture,
 }
 
 const HEALTH_CHECK_INTERVAL_SECS: u64 = 5;
@@ -105,6 +111,8 @@ impl ZundamonApp {
         let mut audio_manager = AudioManager::new(&device_name);
         let device_ready = audio_manager.ensure_device().is_ok()
             && audio_manager.device_exists().unwrap_or(false);
+
+        crate::media::desktop_capture::DesktopCapture::cleanup_stale();
 
         // Spawn the TTS command processing loop on tokio
         let voicevox_url = config.voicevox_url.clone();
@@ -148,6 +156,11 @@ impl ZundamonApp {
                 media_deps_checked: false,
                 media_has_ytdlp: false,
                 media_has_ffmpeg: false,
+                sink_inputs: Vec::new(),
+                pending_refresh_sink_inputs: false,
+                pending_start_capture: None,
+                pending_stop_capture: false,
+                is_capturing: false,
             },
             audio_manager,
             ui_rx,
@@ -157,6 +170,7 @@ impl ZundamonApp {
             last_health_check: Instant::now(),
             is_playing: Arc::new(AtomicBool::new(false)),
             url_player: crate::media::url_player::UrlPlayer::new(),
+            desktop_capture: crate::media::desktop_capture::DesktopCapture::new(),
         }
     }
 
@@ -453,6 +467,33 @@ impl ZundamonApp {
             self.url_player.stop();
             self.state.media_playing = false;
             self.is_playing.store(false, Ordering::SeqCst);
+        }
+
+        if self.state.pending_refresh_sink_inputs {
+            self.state.pending_refresh_sink_inputs = false;
+            match crate::media::desktop_capture::DesktopCapture::list_sink_inputs() {
+                Ok(inputs) => self.state.sink_inputs = inputs,
+                Err(e) => self.state.last_error = Some(format!("sink-input取得失敗: {}", e)),
+            }
+        }
+
+        if let Some((input_id, original_sink)) = self.state.pending_start_capture.take() {
+            let virtual_sink = &self.state.config.virtual_device_name;
+            match self.desktop_capture.start_capture(input_id, &original_sink, virtual_sink) {
+                Ok(()) => {
+                    self.state.is_capturing = true;
+                    self.state.last_error = None;
+                }
+                Err(e) => {
+                    self.state.last_error = Some(format!("キャプチャ開始失敗: {}", e));
+                }
+            }
+        }
+
+        if self.state.pending_stop_capture {
+            self.state.pending_stop_capture = false;
+            self.desktop_capture.stop_capture();
+            self.state.is_capturing = false;
         }
     }
 

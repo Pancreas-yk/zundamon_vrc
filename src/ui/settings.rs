@@ -100,6 +100,48 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
+        ui.collapsing("OSC設定", |ui| {
+            ui.checkbox(&mut state.config.osc_enabled, "OSCチャットボックスを有効化");
+            ui.label("VRChatのチャットボックスにテキストを表示します");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("送信先アドレス:");
+                ui.text_edit_singleline(&mut state.config.osc_address);
+            });
+            ui.horizontal(|ui| {
+                ui.label("ポート:");
+                let mut port_str = state.config.osc_port.to_string();
+                if ui.text_edit_singleline(&mut port_str).changed() {
+                    if let Ok(p) = port_str.parse::<u16>() {
+                        state.config.osc_port = p;
+                    }
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
+        ui.collapsing("音声エフェクト", |ui| {
+            ui.checkbox(&mut state.config.echo_enabled, "エコーを有効化");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("遅延(ms):");
+                ui.add(
+                    egui::Slider::new(&mut state.config.echo_delay_ms, 50..=500)
+                        .step_by(10.0),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("減衰:");
+                ui.add(
+                    egui::Slider::new(&mut state.config.echo_decay, 0.1..=0.8)
+                        .step_by(0.05),
+                );
+            });
+        });
+
+        ui.add_space(8.0);
+
         // Virtual device
         ui.collapsing("仮想デバイス", |ui| {
             ui.horizontal(|ui| {

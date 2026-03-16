@@ -19,7 +19,7 @@ impl Drop for PlaybackGuard {
 
 /// Messages from the tokio runtime back to the UI thread
 enum UiMessage {
-    WavReady(Vec<u8>),
+    WavReady { wav: Vec<u8>, text: String },
     SpeakersLoaded(Vec<Speaker>),
     HealthCheckResult(bool),
     Error(String),
@@ -129,7 +129,7 @@ impl ZundamonApp {
                 TtsCommand::Synthesize { text, params } => {
                     match tts.synthesize(&text, &params).await {
                         Ok(wav) => {
-                            let _ = tx.send(UiMessage::WavReady(wav));
+                            let _ = tx.send(UiMessage::WavReady { wav, text });
                         }
                         Err(e) => {
                             let _ = tx.send(UiMessage::Error(format!("合成エラー: {}", e)));
@@ -162,9 +162,31 @@ impl ZundamonApp {
     fn process_messages(&mut self) {
         while let Ok(msg) = self.ui_rx.try_recv() {
             match msg {
-                UiMessage::WavReady(wav) => {
+                UiMessage::WavReady { wav, text } => {
                     self.state.is_synthesizing = false;
                     self.state.last_error = None;
+
+                    // Send OSC chatbox message before playback
+                    if self.state.config.osc_enabled {
+                        if let Err(e) = crate::osc::send_chatbox(
+                            &self.state.config.osc_address,
+                            self.state.config.osc_port,
+                            &text,
+                        ) {
+                            tracing::warn!("OSC send failed: {}", e);
+                        }
+                    }
+
+                    let wav = if self.state.config.echo_enabled {
+                        crate::audio::effects::apply_echo(
+                            &wav,
+                            self.state.config.echo_delay_ms,
+                            self.state.config.echo_decay,
+                        )
+                    } else {
+                        wav
+                    };
+
                     if self.is_playing.load(Ordering::SeqCst) {
                         tracing::warn!("Playback already in progress, dropping TTS audio");
                     } else {

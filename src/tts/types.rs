@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,3 +34,12 @@ impl SynthParams {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserDictWord {
+    pub surface: String,
+    pub pronunciation: String,
+    pub accent_type: u32,
+}
+
+pub type UserDict = HashMap<String, UserDictWord>;

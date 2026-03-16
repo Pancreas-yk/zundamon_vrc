@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 
 use super::TtsEngine;
-use super::types::{Speaker, SynthParams};
+use super::types::{Speaker, SynthParams, UserDict};
 
 pub struct VoicevoxEngine {
     client: Client,
@@ -16,6 +16,37 @@ impl VoicevoxEngine {
             client: Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
         }
+    }
+
+    pub async fn list_user_dict(&self) -> Result<UserDict> {
+        let url = format!("{}/user_dict", self.base_url);
+        let resp = self.client.get(&url).send().await
+            .context("Failed to fetch user dictionary")?;
+        let dict: UserDict = resp.json().await
+            .context("Failed to parse user dictionary")?;
+        Ok(dict)
+    }
+
+    pub async fn add_user_dict_word(&self, surface: &str, pronunciation: &str) -> Result<String> {
+        let url = format!("{}/user_dict", self.base_url);
+        let resp = self.client.post(&url)
+            .query(&[
+                ("surface", surface),
+                ("pronunciation", pronunciation),
+                ("accent_type", "1"),
+            ])
+            .send().await
+            .context("Failed to add dictionary word")?;
+        let uuid: String = resp.json().await
+            .context("Failed to parse add word response")?;
+        Ok(uuid)
+    }
+
+    pub async fn delete_user_dict_word(&self, word_uuid: &str) -> Result<()> {
+        let url = format!("{}/user_dict/{}", self.base_url, word_uuid);
+        self.client.delete(&url).send().await
+            .context("Failed to delete dictionary word")?;
+        Ok(())
     }
 }
 

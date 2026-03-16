@@ -62,6 +62,9 @@ pub struct AppState {
     pub pending_load_user_dict: bool,
     pub pending_add_dict_word: Option<(String, String)>,
     pub pending_delete_dict_word: Option<String>,
+    pub soundboard_files: Vec<(String, std::path::PathBuf)>,
+    pub pending_soundboard_scan: bool,
+    pub pending_soundboard_play: Option<std::path::PathBuf>,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundamon-voicevox";
@@ -127,6 +130,9 @@ impl ZundamonApp {
                 pending_load_user_dict: false,
                 pending_add_dict_word: None,
                 pending_delete_dict_word: None,
+                soundboard_files: Vec::new(),
+                pending_soundboard_scan: true,
+                pending_soundboard_play: None,
             },
             audio_manager,
             ui_rx,
@@ -343,6 +349,54 @@ impl ZundamonApp {
         }
         if let Some(uuid) = self.state.pending_delete_dict_word.take() {
             let _ = self.tts_tx.send(TtsCommand::DeleteUserDictWord { uuid });
+        }
+
+        if self.state.pending_soundboard_scan {
+            self.state.pending_soundboard_scan = false;
+            let path = std::path::Path::new(&self.state.config.soundboard_path);
+            let mut files = Vec::new();
+            if path.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                            if matches!(ext.to_lowercase().as_str(), "wav" | "mp3" | "ogg") {
+                                let name = p.file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("?")
+                                    .to_string();
+                                files.push((name, p));
+                            }
+                        }
+                    }
+                }
+            } else {
+                let _ = std::fs::create_dir_all(path);
+            }
+            files.sort_by(|a, b| a.0.cmp(&b.0));
+            self.state.soundboard_files = files;
+        }
+
+        if let Some(file_path) = self.state.pending_soundboard_play.take() {
+            if self.is_playing.load(Ordering::SeqCst) {
+                self.state.last_error = Some("再生中です...".to_string());
+            } else {
+                let device_name = self.state.config.virtual_device_name.clone();
+                let monitor = self.state.config.monitor_audio;
+                let playing = self.is_playing.clone();
+                playing.store(true, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let _guard = PlaybackGuard(playing);
+                    match std::fs::read(&file_path) {
+                        Ok(data) => {
+                            if let Err(e) = crate::audio::playback::play_wav(data, &device_name, monitor) {
+                                tracing::error!("Soundboard playback error: {}", e);
+                            }
+                        }
+                        Err(e) => tracing::error!("Failed to read soundboard file: {}", e),
+                    }
+                });
+            }
         }
     }
 

@@ -216,6 +216,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
+        ui.collapsing("サウンドボード", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("フォルダパス:");
+                ui.text_edit_singleline(&mut state.config.soundboard_path);
+                if ui.button("参照").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        state.config.soundboard_path = path.to_string_lossy().to_string();
+                        state.pending_soundboard_scan = true;
+                    }
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
         // Templates
         ui.collapsing("テンプレート", |ui| {
             let mut to_remove = None;

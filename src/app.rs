@@ -5,10 +5,11 @@ use crate::tts::voicevox::VoicevoxEngine;
 use crate::tts::TtsManager;
 use crate::ui::Screen;
 
+use anyhow::Context as _;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 struct PlaybackGuard(Arc<AtomicBool>);
@@ -30,12 +31,20 @@ enum UiMessage {
 
 /// Commands from the UI thread to the tokio runtime
 pub enum TtsCommand {
-    Synthesize { text: String, params: SynthParams },
+    Synthesize {
+        text: String,
+        params: SynthParams,
+    },
     LoadSpeakers,
     HealthCheck,
     LoadUserDict,
-    AddUserDictWord { surface: String, pronunciation: String },
-    DeleteUserDictWord { uuid: String },
+    AddUserDictWord {
+        surface: String,
+        pronunciation: String,
+    },
+    DeleteUserDictWord {
+        uuid: String,
+    },
 }
 
 /// Shared mutable state accessed by UI drawing functions
@@ -98,19 +107,15 @@ const HEALTH_CHECK_INTERVAL_SECS: u64 = 5;
 const HEALTH_CHECK_INTERVAL_LAUNCHING_SECS: u64 = 1;
 
 impl ZundamonApp {
-    pub fn new(
-        config: AppConfig,
-        tts_manager: TtsManager,
-        rt: tokio::runtime::Handle,
-    ) -> Self {
+    pub fn new(config: AppConfig, tts_manager: TtsManager, rt: tokio::runtime::Handle) -> Self {
         let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>();
         let (tts_tx, tts_rx) = mpsc::channel::<TtsCommand>();
 
         let auto_launch_voicevox = config.auto_launch_voicevox;
         let device_name = config.virtual_device_name.clone();
         let mut audio_manager = AudioManager::new(&device_name);
-        let device_ready = audio_manager.ensure_device().is_ok()
-            && audio_manager.device_exists().unwrap_or(false);
+        let device_ready =
+            audio_manager.ensure_device().is_ok() && audio_manager.device_exists().unwrap_or(false);
 
         crate::media::desktop_capture::DesktopCapture::cleanup_stale();
 
@@ -198,10 +203,7 @@ impl ZundamonApp {
                         let _ = tx.send(UiMessage::SpeakersLoaded(speakers));
                     }
                     Err(e) => {
-                        let _ = tx.send(UiMessage::Error(format!(
-                            "スピーカー取得失敗: {}",
-                            e
-                        )));
+                        let _ = tx.send(UiMessage::Error(format!("スピーカー取得失敗: {}", e)));
                     }
                 },
                 TtsCommand::HealthCheck => match tts.health_check().await {
@@ -212,22 +214,38 @@ impl ZundamonApp {
                         let _ = tx.send(UiMessage::HealthCheckResult(false));
                     }
                 },
-                TtsCommand::LoadUserDict => {
-                    match dict_engine.list_user_dict().await {
-                        Ok(dict) => { let _ = tx.send(UiMessage::UserDictLoaded(dict)); }
-                        Err(e) => { let _ = tx.send(UiMessage::Error(format!("辞書取得失敗: {}", e))); }
+                TtsCommand::LoadUserDict => match dict_engine.list_user_dict().await {
+                    Ok(dict) => {
+                        let _ = tx.send(UiMessage::UserDictLoaded(dict));
                     }
-                }
-                TtsCommand::AddUserDictWord { surface, pronunciation } => {
-                    match dict_engine.add_user_dict_word(&surface, &pronunciation).await {
-                        Ok(_) => { let _ = tx.send(UiMessage::UserDictUpdated); }
-                        Err(e) => { let _ = tx.send(UiMessage::Error(format!("辞書登録失敗: {}", e))); }
+                    Err(e) => {
+                        let _ = tx.send(UiMessage::Error(format!("辞書取得失敗: {}", e)));
+                    }
+                },
+                TtsCommand::AddUserDictWord {
+                    surface,
+                    pronunciation,
+                } => {
+                    match dict_engine
+                        .add_user_dict_word(&surface, &pronunciation)
+                        .await
+                    {
+                        Ok(_) => {
+                            let _ = tx.send(UiMessage::UserDictUpdated);
+                        }
+                        Err(e) => {
+                            let _ = tx.send(UiMessage::Error(format!("辞書登録失敗: {}", e)));
+                        }
                     }
                 }
                 TtsCommand::DeleteUserDictWord { uuid } => {
                     match dict_engine.delete_user_dict_word(&uuid).await {
-                        Ok(()) => { let _ = tx.send(UiMessage::UserDictUpdated); }
-                        Err(e) => { let _ = tx.send(UiMessage::Error(format!("辞書削除失敗: {}", e))); }
+                        Ok(()) => {
+                            let _ = tx.send(UiMessage::UserDictUpdated);
+                        }
+                        Err(e) => {
+                            let _ = tx.send(UiMessage::Error(format!("辞書削除失敗: {}", e)));
+                        }
                     }
                 }
             }
@@ -271,7 +289,9 @@ impl ZundamonApp {
                         playing.store(true, Ordering::SeqCst);
                         std::thread::spawn(move || {
                             let _guard = PlaybackGuard(playing);
-                            if let Err(e) = crate::audio::playback::play_wav(wav, &device_name, monitor) {
+                            if let Err(e) =
+                                crate::audio::playback::play_wav(wav, &device_name, monitor)
+                            {
                                 tracing::error!("Playback error: {}", e);
                             }
                         });
@@ -375,7 +395,10 @@ impl ZundamonApp {
             let _ = self.tts_tx.send(TtsCommand::LoadUserDict);
         }
         if let Some((surface, pronunciation)) = self.state.pending_add_dict_word.take() {
-            let _ = self.tts_tx.send(TtsCommand::AddUserDictWord { surface, pronunciation });
+            let _ = self.tts_tx.send(TtsCommand::AddUserDictWord {
+                surface,
+                pronunciation,
+            });
         }
         if let Some(uuid) = self.state.pending_delete_dict_word.take() {
             let _ = self.tts_tx.send(TtsCommand::DeleteUserDictWord { uuid });
@@ -391,7 +414,8 @@ impl ZundamonApp {
                         let p = entry.path();
                         if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
                             if matches!(ext.to_lowercase().as_str(), "wav" | "mp3" | "ogg") {
-                                let name = p.file_stem()
+                                let name = p
+                                    .file_stem()
                                     .and_then(|s| s.to_str())
                                     .unwrap_or("?")
                                     .to_string();
@@ -419,7 +443,9 @@ impl ZundamonApp {
                     let _guard = PlaybackGuard(playing);
                     match std::fs::read(&file_path) {
                         Ok(data) => {
-                            if let Err(e) = crate::audio::playback::play_wav(data, &device_name, monitor) {
+                            if let Err(e) =
+                                crate::audio::playback::play_wav(data, &device_name, monitor)
+                            {
                                 tracing::error!("Soundboard playback error: {}", e);
                             }
                         }
@@ -479,7 +505,10 @@ impl ZundamonApp {
 
         if let Some((input_id, original_sink)) = self.state.pending_start_capture.take() {
             let virtual_sink = &self.state.config.virtual_device_name;
-            match self.desktop_capture.start_capture(input_id, &original_sink, virtual_sink) {
+            match self
+                .desktop_capture
+                .start_capture(input_id, &original_sink, virtual_sink)
+            {
                 Ok(()) => {
                     self.state.is_capturing = true;
                     self.state.last_error = None;
@@ -519,43 +548,24 @@ impl ZundamonApp {
     }
 
     fn launch_voicevox(&mut self) {
-        // Kill existing process if any
-        if let Some(ref mut child) = self.voicevox_process {
-            let _ = child.kill();
-            let _ = child.wait();
+        let path = self.state.config.voicevox_path.trim().to_string();
+        if path.is_empty() {
+            tracing::warn!("voicevox_path is empty, cannot launch");
+            return;
         }
-        if self.is_docker {
+
+        // Clean up any stale container first
+        let is_docker = Self::is_docker_command(&path);
+        if is_docker {
             Self::cleanup_docker_container();
         }
 
-        let path = &self.state.config.voicevox_path;
-        let is_docker = Self::is_docker_command(path);
+        tracing::info!("Launching VOICEVOX: {}", path);
 
-        // Determine how to launch based on path content
         let result = if is_docker {
-            // Remove stale container with the same name
-            Self::cleanup_docker_container();
-            // Inject --name into the docker command
-            let docker_cmd =
-                path.replacen("docker run", &format!("docker run --name {DOCKER_CONTAINER_NAME}"), 1);
-            Command::new("sh")
-                .args(["-c", &docker_cmd])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-        } else if path.contains(' ') {
-            // Command with arguments: run via sh
-            Command::new("sh")
-                .args(["-c", path])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
+            Self::launch_docker_voicevox(&path, &self.state.config.voicevox_url)
         } else {
-            // Simple executable path
-            Command::new(path)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
+            Self::launch_local_voicevox(&path)
         };
 
         match result {
@@ -564,16 +574,79 @@ impl ZundamonApp {
                 self.is_docker = is_docker;
                 self.state.last_error = None;
                 self.state.voicevox_launching = true;
-                tracing::info!("Launched VOICEVOX: {}", path);
+                tracing::info!("VOICEVOX process spawned");
             }
             Err(e) => {
-                self.state.last_error = Some(format!(
-                    "VOICEVOX起動失敗: {}\nパスを設定画面で確認してください",
-                    e
-                ));
                 tracing::error!("Failed to launch VOICEVOX: {}", e);
+                self.state.last_error = Some(format!("VOICEVOX起動失敗: {}", e));
             }
         }
+    }
+
+    fn launch_docker_voicevox(path: &str, _url: &str) -> anyhow::Result<std::process::Child> {
+        let words = shell_words::split(path)
+            .map_err(|e| anyhow::anyhow!("Failed to parse docker command: {}", e))?;
+
+        if words.is_empty() {
+            anyhow::bail!("Empty docker command");
+        }
+
+        // Reject shell metacharacters in any argument
+        for word in &words {
+            if word.chars().any(|c| {
+                matches!(
+                    c,
+                    ';' | '|' | '&' | '$' | '`' | '(' | ')' | '{' | '}' | '<' | '>'
+                )
+            }) {
+                anyhow::bail!(
+                    "Shell metacharacter detected in docker command argument: {}",
+                    word
+                );
+            }
+        }
+
+        let child = std::process::Command::new(&words[0])
+            .args(&words[1..])
+            .arg("--name")
+            .arg(DOCKER_CONTAINER_NAME)
+            .arg("-d")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("Failed to spawn docker command")?;
+
+        Ok(child)
+    }
+
+    fn launch_local_voicevox(path: &str) -> anyhow::Result<std::process::Child> {
+        let words = shell_words::split(path)
+            .map_err(|e| anyhow::anyhow!("Failed to parse voicevox command: {}", e))?;
+
+        if words.is_empty() {
+            anyhow::bail!("Empty voicevox command");
+        }
+
+        // Reject shell metacharacters
+        for word in &words {
+            if word.chars().any(|c| {
+                matches!(
+                    c,
+                    ';' | '|' | '&' | '$' | '`' | '(' | ')' | '{' | '}' | '<' | '>'
+                )
+            }) {
+                anyhow::bail!("Shell metacharacter detected in voicevox command: {}", word);
+            }
+        }
+
+        let child = std::process::Command::new(&words[0])
+            .args(&words[1..])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("Failed to spawn voicevox process")?;
+
+        Ok(child)
     }
 }
 
@@ -601,7 +674,11 @@ impl eframe::App for ZundamonApp {
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.state.current_screen, Screen::Input, "入力");
-                ui.selectable_value(&mut self.state.current_screen, Screen::Soundboard, "サウンドボード");
+                ui.selectable_value(
+                    &mut self.state.current_screen,
+                    Screen::Soundboard,
+                    "サウンドボード",
+                );
                 ui.selectable_value(&mut self.state.current_screen, Screen::Media, "メディア");
                 ui.selectable_value(&mut self.state.current_screen, Screen::Settings, "設定");
             });
@@ -616,5 +693,26 @@ impl eframe::App for ZundamonApp {
 
         // Keep repainting for periodic health checks and spinner
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_shell_metacharacters_in_docker_cmd() {
+        let result = ZundamonApp::launch_docker_voicevox(
+            "docker run evil;rm -rf /",
+            "http://127.0.0.1:50021",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("metacharacter"));
+    }
+
+    #[test]
+    fn rejects_shell_metacharacters_in_local_cmd() {
+        let result = ZundamonApp::launch_local_voicevox("voicevox && rm -rf /");
+        assert!(result.is_err());
     }
 }

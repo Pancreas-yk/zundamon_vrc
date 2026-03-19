@@ -1,3 +1,4 @@
+use crate::ui::theme::Theme;
 use crate::validation;
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -22,6 +23,8 @@ pub struct AppConfig {
     pub echo_enabled: bool,
     pub echo_delay_ms: u32,
     pub echo_decay: f64,
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +72,7 @@ impl Default for AppConfig {
             echo_enabled: false,
             echo_delay_ms: 200,
             echo_decay: 0.4,
+            theme: Theme::default(),
         }
     }
 }
@@ -127,6 +131,8 @@ impl AppConfig {
                 *t = t.chars().take(512).collect();
             }
         }
+
+        self.theme = std::mem::take(&mut self.theme).validated();
     }
 
     pub fn save(&self) -> Result<()> {

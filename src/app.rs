@@ -88,6 +88,8 @@ pub struct AppState {
     pub is_capturing: bool,
     pub error_display_time: Option<std::time::Instant>,
     pub error_hovered: bool,
+    pub templates_expanded: bool,
+    pub adding_template: bool,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundamon-voicevox";
@@ -171,6 +173,8 @@ impl ZundamonApp {
                 is_capturing: false,
                 error_display_time: None,
                 error_hovered: false,
+                templates_expanded: false,
+                adding_template: false,
             },
             audio_manager,
             ui_rx,

@@ -86,6 +86,8 @@ pub struct AppState {
     pub pending_start_capture: Option<(u32, String)>,
     pub pending_stop_capture: bool,
     pub is_capturing: bool,
+    pub error_display_time: Option<std::time::Instant>,
+    pub error_hovered: bool,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundamon-voicevox";
@@ -101,6 +103,7 @@ pub struct ZundamonApp {
     pub is_playing: Arc<AtomicBool>,
     url_player: crate::media::url_player::UrlPlayer,
     desktop_capture: crate::media::desktop_capture::DesktopCapture,
+    needs_theme_update: bool,
 }
 
 const HEALTH_CHECK_INTERVAL_SECS: u64 = 5;
@@ -166,6 +169,8 @@ impl ZundamonApp {
                 pending_start_capture: None,
                 pending_stop_capture: false,
                 is_capturing: false,
+                error_display_time: None,
+                error_hovered: false,
             },
             audio_manager,
             ui_rx,
@@ -176,6 +181,7 @@ impl ZundamonApp {
             is_playing: Arc::new(AtomicBool::new(false)),
             url_player: crate::media::url_player::UrlPlayer::new(),
             desktop_capture: crate::media::desktop_capture::DesktopCapture::new(),
+            needs_theme_update: true,
         }
     }
 
@@ -313,6 +319,7 @@ impl ZundamonApp {
                 UiMessage::Error(err) => {
                     self.state.is_synthesizing = false;
                     self.state.last_error = Some(err);
+                    self.state.error_display_time = Some(std::time::Instant::now());
                 }
                 UiMessage::UserDictLoaded(dict) => {
                     self.state.user_dict = dict
@@ -712,31 +719,145 @@ impl Drop for ZundamonApp {
 }
 
 impl eframe::App for ZundamonApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Transparent clear color for the window
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_messages();
         self.state.is_playing = self.is_playing.load(Ordering::SeqCst);
         self.periodic_health_check();
         self.process_actions();
 
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.state.current_screen, Screen::Input, "入力");
-                ui.selectable_value(
-                    &mut self.state.current_screen,
-                    Screen::Soundboard,
-                    "サウンドボード",
-                );
-                ui.selectable_value(&mut self.state.current_screen, Screen::Media, "メディア");
-                ui.selectable_value(&mut self.state.current_screen, Screen::Settings, "設定");
-            });
-        });
+        let theme = &self.state.config.theme;
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.state.current_screen {
-            Screen::Input => crate::ui::input::show(ui, &mut self.state),
-            Screen::Soundboard => crate::ui::soundboard::show(ui, &mut self.state),
-            Screen::Media => crate::ui::media::show(ui, &mut self.state),
-            Screen::Settings => crate::ui::settings::show(ui, &mut self.state),
-        });
+        // Apply theme visuals (cached, only set once)
+        if self.needs_theme_update {
+            ctx.set_visuals(theme.to_visuals());
+            ctx.set_style(theme.to_style());
+            self.needs_theme_update = false;
+        }
+
+        // Paint window background with rounded rect
+        let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let rounding = if is_maximized {
+            0.0
+        } else {
+            theme.window_rounding
+        };
+        let screen_rect = ctx.screen_rect();
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        painter.rect_filled(
+            screen_rect,
+            egui::CornerRadius::same(rounding as u8),
+            theme.color(theme.window_background),
+        );
+
+        // Custom title bar
+        crate::ui::titlebar::show(ctx, theme);
+
+        // Keyboard shortcuts
+        if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::F4)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        // Tab panel
+        egui::TopBottomPanel::top("tabs")
+            .frame(
+                egui::Frame::NONE
+                    .fill(egui::Color32::TRANSPARENT)
+                    .inner_margin(egui::Margin::symmetric(
+                        theme.spacing_medium as i8,
+                        theme.spacing_small as i8,
+                    )),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    for (screen, label) in [
+                        (Screen::Input, "Input"),
+                        (Screen::Soundboard, "Soundboard"),
+                        (Screen::Media, "Media"),
+                        (Screen::Settings, "Settings"),
+                    ] {
+                        let is_active = self.state.current_screen == screen;
+                        let bg = if is_active {
+                            theme.color(theme.tab_active_background)
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+                        let text_color = if is_active {
+                            theme.color(theme.text_primary)
+                        } else {
+                            theme.color(theme.text_muted)
+                        };
+                        let btn = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(label).size(11.0).color(text_color),
+                            )
+                            .fill(bg)
+                            .corner_radius(egui::CornerRadius::same(theme.tab_rounding as u8)),
+                        );
+                        if btn.clicked() {
+                            self.state.current_screen = screen;
+                        }
+                    }
+                });
+            });
+
+        // Status bar (bottom)
+        let theme = &self.state.config.theme;
+        egui::TopBottomPanel::bottom("status")
+            .exact_height(24.0)
+            .frame(egui::Frame::NONE.fill(theme.color(theme.titlebar_background)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    let (vox_color, vox_text) = if self.state.voicevox_connected {
+                        (theme.color(theme.status_ok), "VOICEVOX")
+                    } else if self.state.voicevox_launching {
+                        (theme.color(theme.status_warn), "VOICEVOX...")
+                    } else {
+                        (theme.color(theme.status_error), "VOICEVOX")
+                    };
+                    ui.colored_label(vox_color, format!("\u{25CF} {}", vox_text));
+                    ui.add_space(12.0);
+                    let (mic_color, mic_text) = if self.state.device_ready {
+                        (theme.color(theme.status_ok), "Virtual Mic")
+                    } else {
+                        (theme.color(theme.status_warn), "Virtual Mic")
+                    };
+                    ui.colored_label(mic_color, format!("\u{25CF} {}", mic_text));
+                    if let Some(ref error) = self.state.last_error.clone() {
+                        ui.add_space(12.0);
+                        let error_label = ui.colored_label(
+                            theme.color(theme.status_error),
+                            error.chars().take(60).collect::<String>(),
+                        );
+                        self.state.error_hovered = error_label.hovered();
+                        if error_label.clicked() {
+                            self.state.last_error = None;
+                            self.state.error_display_time = None;
+                        }
+                    }
+                });
+            });
+
+        // Toast auto-dismiss (5 seconds, paused on hover)
+        if let Some(time) = self.state.error_display_time {
+            if !self.state.error_hovered && time.elapsed() > std::time::Duration::from_secs(5) {
+                self.state.last_error = None;
+                self.state.error_display_time = None;
+            }
+        }
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
+            .show(ctx, |ui| match self.state.current_screen {
+                Screen::Input => crate::ui::input::show(ui, &mut self.state),
+                Screen::Soundboard => crate::ui::soundboard::show(ui, &mut self.state),
+                Screen::Media => crate::ui::media::show(ui, &mut self.state),
+                Screen::Settings => crate::ui::settings::show(ui, &mut self.state),
+            });
 
         // Keep repainting for periodic health checks and spinner
         ctx.request_repaint_after(std::time::Duration::from_secs(1));

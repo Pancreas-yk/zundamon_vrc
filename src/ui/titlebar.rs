@@ -7,7 +7,7 @@ pub fn show(ctx: &egui::Context, theme: &Theme) {
 
     egui::TopBottomPanel::top("titlebar")
         .exact_height(titlebar_height)
-        .frame(egui::Frame::none().fill(theme.color(theme.titlebar_background)))
+        .frame(egui::Frame::NONE.fill(theme.color(theme.titlebar_background)))
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 let drag_rect = ui.available_rect_before_wrap();

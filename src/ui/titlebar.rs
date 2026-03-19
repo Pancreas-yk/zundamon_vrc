@@ -16,7 +16,7 @@ pub fn show(ctx: &egui::Context, theme: &Theme) {
                     ui.id().with("titlebar_drag"),
                     Sense::click_and_drag(),
                 );
-                if drag_response.dragged() {
+                if drag_response.drag_started() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 if drag_response.double_clicked() {

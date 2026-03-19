@@ -134,7 +134,9 @@ impl Theme {
 
     pub fn to_visuals(&self) -> Visuals {
         let mut visuals = Visuals::dark();
-        visuals.override_text_color = Some(self.color(self.text_primary));
+        // Set default text color via widget strokes, not override_text_color
+        // (override_text_color ignores per-widget RichText::color calls)
+        visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, self.color(self.text_primary));
         visuals.panel_fill = self.color(self.panel_background);
         visuals.window_fill = self.color(self.window_background);
         visuals.window_corner_radius = CornerRadius::same(self.window_rounding as u8);

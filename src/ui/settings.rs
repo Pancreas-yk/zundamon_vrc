@@ -1,4 +1,5 @@
 use crate::app::AppState;
+use crate::validation;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -11,6 +12,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.label("URL:");
                 ui.text_edit_singleline(&mut state.config.voicevox_url);
             });
+            if validation::is_valid_voicevox_url(&state.config.voicevox_url).is_err() {
+                ui.colored_label(
+                    state.config.theme.color(state.config.theme.status_warn),
+                    "URLはhttp://localhost または http://127.0.0.1 のみ",
+                );
+            }
             ui.horizontal(|ui| {
                 ui.label("実行パス:");
                 ui.add(
@@ -37,9 +44,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                     state.pending_launch_voicevox = true;
                 }
                 if state.voicevox_connected {
-                    ui.colored_label(egui::Color32::from_rgb(100, 200, 100), "接続OK");
+                    ui.colored_label(
+                        state.config.theme.color(state.config.theme.status_ok),
+                        "接続OK",
+                    );
                 } else {
-                    ui.colored_label(egui::Color32::from_rgb(200, 100, 100), "未接続");
+                    ui.colored_label(
+                        state.config.theme.color(state.config.theme.status_error),
+                        "未接続",
+                    );
                 }
             });
         });
@@ -59,9 +72,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             });
             ui.horizontal(|ui| {
                 ui.label("抑揚:");
-                ui.add(
-                    egui::Slider::new(&mut params.intonation_scale, 0.0..=2.0).step_by(0.05),
-                );
+                ui.add(egui::Slider::new(&mut params.intonation_scale, 0.0..=2.0).step_by(0.05));
             });
             ui.horizontal(|ui| {
                 ui.label("音量:");
@@ -114,9 +125,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
                 ui.horizontal(|ui| {
                     ui.label("表記:");
-                    ui.add(egui::TextEdit::singleline(&mut state.new_dict_surface).desired_width(100.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.new_dict_surface)
+                            .desired_width(100.0),
+                    );
                     ui.label("読み:");
-                    ui.add(egui::TextEdit::singleline(&mut state.new_dict_pronunciation).desired_width(100.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.new_dict_pronunciation)
+                            .desired_width(100.0),
+                    );
                     if ui.button("追加").clicked()
                         && !state.new_dict_surface.trim().is_empty()
                         && !state.new_dict_pronunciation.trim().is_empty()
@@ -173,17 +190,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label("遅延(ms):");
-                ui.add(
-                    egui::Slider::new(&mut state.config.echo_delay_ms, 50..=500)
-                        .step_by(10.0),
-                );
+                ui.add(egui::Slider::new(&mut state.config.echo_delay_ms, 50..=500).step_by(10.0));
             });
             ui.horizontal(|ui| {
                 ui.label("減衰:");
-                ui.add(
-                    egui::Slider::new(&mut state.config.echo_decay, 0.1..=0.8)
-                        .step_by(0.05),
-                );
+                ui.add(egui::Slider::new(&mut state.config.echo_decay, 0.1..=0.8).step_by(0.05));
             });
         });
 
@@ -195,6 +206,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.label("デバイス名:");
                 ui.text_edit_singleline(&mut state.config.virtual_device_name);
             });
+            if !validation::is_valid_device_name(&state.config.virtual_device_name) {
+                ui.colored_label(
+                    state.config.theme.color(state.config.theme.status_warn),
+                    "デバイス名は英数字、_、- のみ (最大64文字)",
+                );
+            }
             ui.horizontal(|ui| {
                 if ui.button("作成").clicked() {
                     state.pending_create_device = true;
@@ -205,11 +222,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             });
             if state.device_ready {
                 ui.colored_label(
-                    egui::Color32::from_rgb(100, 200, 100),
-                    format!(
-                        "マイクソース: {}.monitor",
-                        state.config.virtual_device_name
-                    ),
+                    state.config.theme.color(state.config.theme.status_ok),
+                    format!("マイクソース: {}.monitor", state.config.virtual_device_name),
                 );
             }
         });

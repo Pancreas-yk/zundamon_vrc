@@ -1401,7 +1401,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     // ── Send button (right-aligned) ──
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let send_enabled = !state.input_text.trim().is_empty() && !state.is_synthesizing;
-        let btn_text = if state.synthesizing { "合成中..." } else { "Send" };
+        let btn_text = if state.is_synthesizing { "合成中..." } else { "Send" };
 
         let btn = ui.add_enabled(
             send_enabled,

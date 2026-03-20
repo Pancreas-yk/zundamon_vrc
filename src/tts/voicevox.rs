@@ -17,7 +17,7 @@ impl VoicevoxEngine {
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(5))
             .build()
-            .unwrap_or_else(|_| Client::new());
+            .expect("failed to build reqwest client with security timeouts");
         Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),

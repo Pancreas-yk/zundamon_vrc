@@ -183,6 +183,7 @@ pub fn stop_file_playback(
     cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     let mut pid_list = pids.lock().unwrap();
     for &pid in pid_list.iter() {
+        // PID 0 is reserved and must never be signaled.
         if pid == 0 {
             continue;
         }

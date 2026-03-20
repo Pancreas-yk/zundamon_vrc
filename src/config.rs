@@ -85,9 +85,14 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Escape .desktop Exec field metacharacters to avoid malformed entries and
+    /// command-like expansion when executable paths contain special characters.
     fn escape_desktop_exec(value: &str) -> String {
         value
             .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('`', "\\`")
+            .replace('$', "\\$")
             .replace('\n', "\\n")
             .replace('\r', "\\r")
             .replace('\t', "\\t")
@@ -215,7 +220,7 @@ mod tests {
 
     #[test]
     fn desktop_exec_is_escaped() {
-        let escaped = AppConfig::escape_desktop_exec("a\\b\nc\rd\te");
-        assert_eq!(escaped, "a\\\\b\\nc\\rd\\te");
+        let escaped = AppConfig::escape_desktop_exec("a\\b\nc\rd\te\"f`g$h");
+        assert_eq!(escaped, "a\\\\b\\nc\\rd\\te\\\"f\\`g\\$h");
     }
 }

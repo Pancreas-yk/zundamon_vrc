@@ -459,7 +459,17 @@ impl ZunduxApp {
             let path = std::path::Path::new(&self.state.config.soundboard_path);
             let mut files = Vec::new();
             if path.is_dir() {
-                let base_canonical = path.canonicalize().ok();
+                let base_canonical = match path.canonicalize() {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to canonicalize soundboard directory '{}': {}",
+                            path.display(),
+                            e
+                        );
+                        None
+                    }
+                };
                 if let Ok(entries) = std::fs::read_dir(path) {
                     for entry in entries.flatten() {
                         let p = entry.path();
@@ -844,24 +854,26 @@ impl ZunduxApp {
             anyhow::bail!("Empty voicevox command");
         }
 
-        // Reject shell metacharacters
-        for word in &words {
-            if word.chars().any(|c| {
-                matches!(
-                    c,
-                    ';' | '|' | '&' | '$' | '`' | '(' | ')' | '{' | '}' | '<' | '>'
-                )
-            }) {
-                anyhow::bail!("Shell metacharacter detected in voicevox command: {}", word);
-            }
-        }
-
         if words.len() != 1 {
             anyhow::bail!(
                 "Local VOICEVOX launch accepts executable path only (no arguments allowed)"
             );
         }
 
+        // Reject shell metacharacters in executable path
+        if words[0].chars().any(|c| {
+                matches!(
+                    c,
+                    ';' | '|' | '&' | '$' | '`' | '(' | ')' | '{' | '}' | '<' | '>'
+                )
+            }) {
+            anyhow::bail!(
+                "Shell metacharacter detected in voicevox command: {}",
+                words[0]
+            );
+        }
+
+        tracing::info!("Launching local VOICEVOX binary: {}", words[0]);
         let child = std::process::Command::new(&words[0])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

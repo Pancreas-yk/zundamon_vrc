@@ -124,7 +124,7 @@ cargo run --release
 1. **VOICEVOX実行パス** に起動コマンドを入力:
    - Docker GPU: `docker run --rm --gpus all -p 50021:50021 voicevox/voicevox_engine:nvidia-latest`
    - Docker CPU: `docker run --rm -p 50021:50021 voicevox/voicevox_engine:latest`
-   - バイナリ: `/path/to/voicevox_engine/run`
+   - バイナリ: `/path/to/voicevox_engine/run`（ローカルバイナリは引数なしの実行ファイルパスのみ）
 2. **「アプリ起動時にVOICEVOXを自動起動」** にチェックを入れる
 
 Docker を使う場合、アプリが自動的に `--name zundamon-voicevox -d` フラグを付与してバックグラウンドで起動します。二重起動の防止も自動で行われます。

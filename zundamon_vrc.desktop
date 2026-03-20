@@ -1,9 +1,0 @@
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=ずんだもん VRC
-Comment=VOICEVOX TTS for VRChat via virtual microphone
-Exec=sh -c 'exec "$(dirname "$(readlink -f "%k")")/launch.sh"'
-Icon=audio-input-microphone
-Terminal=false
-Categories=AudioVideo;Audio;

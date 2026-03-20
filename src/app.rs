@@ -575,7 +575,22 @@ impl ZundamonApp {
     }
 
     fn launch_voicevox(&mut self) {
-        // Duplicate guard — check if process we spawned is still alive
+        let path = self.state.config.voicevox_path.trim().to_string();
+        if path.is_empty() {
+            tracing::warn!("voicevox_path is empty, cannot launch");
+            return;
+        }
+
+        let is_docker = Self::is_docker_command(&path);
+
+        // Duplicate guard — for Docker, check container; for local, check process
+        if is_docker && Self::is_voicevox_docker_running() {
+            tracing::info!("VOICEVOX Docker container already running");
+            self.state.voicevox_launching = true;
+            return;
+        }
+
+        // Local process guard
         if let Some(ref mut proc) = self.voicevox_process {
             match proc.try_wait() {
                 Ok(None) => {
@@ -588,21 +603,7 @@ impl ZundamonApp {
             }
         }
 
-        let path = self.state.config.voicevox_path.trim().to_string();
-        if path.is_empty() {
-            tracing::warn!("voicevox_path is empty, cannot launch");
-            return;
-        }
-
-        // Check if Docker container exists from a previous session
-        if Self::is_docker_command(&path) && Self::is_voicevox_docker_running() {
-            tracing::info!("VOICEVOX Docker container already running");
-            self.state.voicevox_launching = true;
-            return;
-        }
-
         // Clean up any stale container first
-        let is_docker = Self::is_docker_command(&path);
         if is_docker {
             Self::cleanup_docker_container();
         }
@@ -653,13 +654,58 @@ impl ZundamonApp {
             }
         }
 
+        // Insert --name and -d flags before the image name.
+        // Docker syntax: docker run [OPTIONS] IMAGE [COMMAND] [ARG...]
+        // We need to find where "run" is, then insert our flags right after
+        // the user-supplied options but before the image name.
+        // Strategy: find "run" in args, then find the first positional arg
+        // (not starting with '-' and not a value for a preceding flag) — that's the image.
+        let mut args: Vec<String> = words[1..].to_vec();
+
+        // Find image position: skip flags and their values after "run"
+        let run_idx = args.iter().position(|w| w == "run");
+        let search_start = run_idx.map_or(0, |i| i + 1);
+        let mut i = search_start;
+        while i < args.len() {
+            let arg = &args[i];
+            if arg.starts_with('-') {
+                // Flags that take a value (next arg is consumed)
+                let takes_value = matches!(
+                    arg.as_str(),
+                    "-p" | "--publish"
+                        | "-v" | "--volume"
+                        | "-e" | "--env"
+                        | "--name"
+                        | "--gpus"
+                        | "--network"
+                        | "--platform"
+                        | "-w" | "--workdir"
+                        | "-u" | "--user"
+                        | "--entrypoint"
+                        | "--mount"
+                        | "-l" | "--label"
+                        | "--memory" | "-m"
+                );
+                if takes_value && !arg.contains('=') {
+                    i += 2; // skip flag + value
+                } else {
+                    i += 1; // boolean flag or --flag=value
+                }
+            } else {
+                // First positional arg = image name
+                break;
+            }
+        }
+
+        // Insert our flags right before the image name
+        args.insert(i, "-d".to_string());
+        args.insert(i, DOCKER_CONTAINER_NAME.to_string());
+        args.insert(i, "--name".to_string());
+
         let child = std::process::Command::new(&words[0])
-            .args(&words[1..])
-            .arg("--name")
-            .arg(DOCKER_CONTAINER_NAME)
-            .arg("-d")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .args(&args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .context("Failed to spawn docker command")?;
 

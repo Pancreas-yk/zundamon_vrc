@@ -60,7 +60,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.label("実行パス:");
                 ui.add(
                     egui::TextEdit::singleline(&mut state.config.voicevox_path)
-                        .hint_text("/path/to/VOICEVOX または docker run ..."),
+                        .hint_text("ローカルバイナリのパス（Dockerの場合は空でOK）"),
                 );
                 if ui.button("参照").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -170,10 +170,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 let mut silent_to_delete = None;
                 for (i, word) in state.config.silent_words.iter().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "{} → {{silent}}",
-                            word
-                        ));
+                        ui.label(format!("{} → {{silent}}", word));
                         if ui.small_button("削除").clicked() {
                             silent_to_delete = Some(i);
                         }
@@ -251,11 +248,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                         .weak(),
                 );
             } else {
-                let current = state
-                    .config
-                    .mic_source_name
-                    .clone()
-                    .unwrap_or_default();
+                let current = state.config.mic_source_name.clone().unwrap_or_default();
                 let current_desc = state
                     .available_mic_sources
                     .iter()
@@ -268,11 +261,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                     .width(280.0)
                     .show_ui(ui, |ui| {
                         for (name, desc) in &state.available_mic_sources {
-                            let is_selected = state
-                                .config
-                                .mic_source_name
-                                .as_deref()
-                                == Some(name.as_str());
+                            let is_selected =
+                                state.config.mic_source_name.as_deref() == Some(name.as_str());
                             if ui.selectable_label(is_selected, desc).clicked() {
                                 state.config.mic_source_name = Some(name.clone());
                                 // Reconnect loopback with new source if mic is on
@@ -341,9 +331,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 );
             }
             ui.label(
-                egui::RichText::new("名前変更は「削除」→「作成」で反映されます（アプリの再起動は不要）")
-                    .small()
-                    .weak(),
+                egui::RichText::new(
+                    "名前変更は「削除」→「作成」で反映されます（アプリの再起動は不要）",
+                )
+                .small()
+                .weak(),
             );
             ui.horizontal(|ui| {
                 if ui.button("作成").clicked() {
@@ -437,22 +429,37 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             ui.label(egui::RichText::new("カラー設定（#RRGGBB または #RRGGBBAA）").small());
             ui.add_space(4.0);
 
-            let color_fields: &[(&str, &str, fn(&mut crate::ui::theme::Theme) -> &mut [u8; 4])] = &[
-                ("タイトルバー文字", "titlebar_text", |t| &mut t.titlebar_text),
-                ("パネル背景", "panel_background", |t| &mut t.panel_background),
+            type ColorAccessor = fn(&mut crate::ui::theme::Theme) -> &mut [u8; 4];
+            let color_fields: &[(&str, &str, ColorAccessor)] = &[
+                ("タイトルバー文字", "titlebar_text", |t| {
+                    &mut t.titlebar_text
+                }),
+                ("パネル背景", "panel_background", |t| {
+                    &mut t.panel_background
+                }),
                 ("メイン文字", "text_primary", |t| &mut t.text_primary),
                 ("サブ文字", "text_secondary", |t| &mut t.text_secondary),
                 ("控えめ文字", "text_muted", |t| &mut t.text_muted),
                 ("アクセント", "accent", |t| &mut t.accent),
-                ("アクセント(ホバー)", "accent_hover", |t| &mut t.accent_hover),
-                ("ボタン背景", "button_background", |t| &mut t.button_background),
-                ("入力欄背景", "input_background", |t| &mut t.input_background),
-                ("チップ背景", "chip_background", |t| &mut t.chip_background),
-                ("タブ背景(選択)", "tab_active_background", |t| &mut t.tab_active_background),
+                ("アクセント(ホバー)", "accent_hover", |t| {
+                    &mut t.accent_hover
+                }),
+                ("ボタン背景", "button_background", |t| {
+                    &mut t.button_background
+                }),
+                ("入力欄背景", "input_background", |t| {
+                    &mut t.input_background
+                }),
+                ("チップ背景", "chip_background", |t| {
+                    &mut t.chip_background
+                }),
+                ("タブ背景(選択)", "tab_active_background", |t| {
+                    &mut t.tab_active_background
+                }),
             ];
 
             for &(label, key, accessor) in color_fields {
-                let current = accessor(&mut state.config.theme).clone();
+                let current = *accessor(&mut state.config.theme);
                 let buf = state
                     .color_edit_buffers
                     .entry(key.to_string())
@@ -461,10 +468,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.horizontal(|ui| {
                     // Color preview swatch
                     let preview_color = state.config.theme.color(current);
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(16.0, 16.0),
-                        egui::Sense::hover(),
-                    );
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 2.0, preview_color);
 
                     ui.label(format!("{}:", label));
@@ -549,8 +554,7 @@ fn show_color_with_opacity(
         if ui
             .add_enabled(
                 !is_white,
-                egui::Slider::new(&mut opacity, 0.0..=100.0)
-                    .suffix("%"),
+                egui::Slider::new(&mut opacity, 0.0..=100.0).suffix("%"),
             )
             .changed()
         {
@@ -559,7 +563,11 @@ fn show_color_with_opacity(
             state.needs_theme_update = true;
         }
     });
-    if *accessor(&mut state.config.theme) == [255, 255, 255, current[3]] && current[0] == 255 && current[1] == 255 && current[2] == 255 {
+    if *accessor(&mut state.config.theme) == [255, 255, 255, current[3]]
+        && current[0] == 255
+        && current[1] == 255
+        && current[2] == 255
+    {
         ui.label(
             egui::RichText::new("  白(#FFFFFF)はpremultiplied alphaのため透明度を変更できません")
                 .small()

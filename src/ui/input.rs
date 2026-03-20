@@ -86,13 +86,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             ("MIC: OFF", theme.color(theme.text_muted))
         };
         let mic_btn = ui.add(
-            egui::Button::new(
-                egui::RichText::new(mic_label)
-                    .size(10.0)
-                    .color(mic_color),
-            )
-            .corner_radius(CornerRadius::same(theme.chip_rounding as u8))
-            .fill(theme.color(theme.chip_background)),
+            egui::Button::new(egui::RichText::new(mic_label).size(10.0).color(mic_color))
+                .corner_radius(CornerRadius::same(theme.chip_rounding as u8))
+                .fill(theme.color(theme.chip_background)),
         );
         mic_btn.clone().on_hover_text(if state.mic_passthrough {
             "クリックでずんだもんモードに戻る"
@@ -206,8 +202,9 @@ fn show_template_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
             {
                 state.templates_expanded = true;
             }
-        } else if state.templates_expanded && templates.len() > TEMPLATE_MAX_VISIBLE_ROWS * 4 {
-            if ui
+        } else if state.templates_expanded
+            && templates.len() > TEMPLATE_MAX_VISIBLE_ROWS * 4
+            && ui
                 .add(
                     egui::Button::new(
                         egui::RichText::new("Show less")
@@ -218,9 +215,8 @@ fn show_template_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
                     .fill(theme.color(theme.chip_background)),
                 )
                 .clicked()
-            {
-                state.templates_expanded = false;
-            }
+        {
+            state.templates_expanded = false;
         }
 
         if ui
@@ -261,5 +257,4 @@ fn show_template_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
             }
         });
     }
-
 }

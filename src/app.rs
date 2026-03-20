@@ -96,6 +96,7 @@ pub struct AppState {
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundux-voicevox";
+const DOCKER_NAME_FILTER: &str = "name=zundux-voicevox";
 
 pub struct ZunduxApp {
     state: AppState,
@@ -502,11 +503,12 @@ impl ZunduxApp {
         if self.state.pending_toggle_mic {
             self.state.pending_toggle_mic = false;
             let was_on = self.audio_manager.virtual_device.is_mic_passthrough();
-            tracing::info!("Mic toggle requested: currently {}", if was_on { "ON" } else { "OFF" });
+            tracing::info!(
+                "Mic toggle requested: currently {}",
+                if was_on { "ON" } else { "OFF" }
+            );
             let result = if was_on {
-                self.audio_manager
-                    .virtual_device
-                    .disable_mic_passthrough()
+                self.audio_manager.virtual_device.disable_mic_passthrough()
             } else {
                 let source = self
                     .state
@@ -531,10 +533,10 @@ impl ZunduxApp {
                     // Restart capture with updated speaker routing to prevent acoustic feedback
                     if self.state.is_capturing {
                         let virtual_sink = self.state.config.virtual_device_name.clone();
-                        if let Err(e) = self.desktop_capture.restart_capture(
-                            &virtual_sink,
-                            self.state.mic_passthrough,
-                        ) {
+                        if let Err(e) = self
+                            .desktop_capture
+                            .restart_capture(&virtual_sink, self.state.mic_passthrough)
+                        {
                             tracing::warn!("Failed to restart capture after mic toggle: {}", e);
                         }
                     }
@@ -621,10 +623,12 @@ impl ZunduxApp {
         if let Some((input_id, original_sink)) = self.state.pending_start_capture.take() {
             let virtual_sink = &self.state.config.virtual_device_name;
             let skip_speaker = self.state.mic_passthrough;
-            match self
-                .desktop_capture
-                .start_capture(input_id, &original_sink, virtual_sink, skip_speaker)
-            {
+            match self.desktop_capture.start_capture(
+                input_id,
+                &original_sink,
+                virtual_sink,
+                skip_speaker,
+            ) {
                 Ok(()) => {
                     self.state.is_capturing = true;
                     self.state.last_error = None;
@@ -656,12 +660,12 @@ impl ZunduxApp {
             .args([
                 "ps",
                 "--filter",
-                "name=zundux-voicevox",
+                DOCKER_NAME_FILTER,
                 "--format",
                 "{{.Names}}",
             ])
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("zundux-voicevox"))
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(DOCKER_CONTAINER_NAME))
             .unwrap_or(false)
     }
 
@@ -677,7 +681,7 @@ impl ZunduxApp {
                 "ps",
                 "-a",
                 "--filter",
-                &format!("name={}", DOCKER_CONTAINER_NAME),
+                DOCKER_NAME_FILTER,
                 "--filter",
                 "status=exited",
                 "--format",
@@ -686,15 +690,6 @@ impl ZunduxApp {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains(DOCKER_CONTAINER_NAME))
             .unwrap_or(false)
-    }
-
-    #[allow(dead_code)]
-    fn cleanup_docker_container() {
-        let _ = Command::new("docker")
-            .args(["rm", "-f", DOCKER_CONTAINER_NAME])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
     }
 
     fn launch_voicevox(&mut self) {
@@ -745,6 +740,7 @@ impl ZunduxApp {
                 Err(e) => {
                     tracing::error!("Failed to restart VOICEVOX container: {}", e);
                     self.state.last_error = Some(format!("VOICEVOX再起動失敗: {}", e));
+                    self.state.voicevox_launching = false;
                 }
             }
             return;
@@ -815,18 +811,24 @@ impl ZunduxApp {
                 let takes_value = matches!(
                     arg.as_str(),
                     "-p" | "--publish"
-                        | "-v" | "--volume"
-                        | "-e" | "--env"
+                        | "-v"
+                        | "--volume"
+                        | "-e"
+                        | "--env"
                         | "--name"
                         | "--gpus"
                         | "--network"
                         | "--platform"
-                        | "-w" | "--workdir"
-                        | "-u" | "--user"
+                        | "-w"
+                        | "--workdir"
+                        | "-u"
+                        | "--user"
                         | "--entrypoint"
                         | "--mount"
-                        | "-l" | "--label"
-                        | "--memory" | "-m"
+                        | "-l"
+                        | "--label"
+                        | "--memory"
+                        | "-m"
                 );
                 if takes_value && !arg.contains('=') {
                     i += 2; // skip flag + value
@@ -1040,10 +1042,8 @@ impl eframe::App for ZunduxApp {
                     // Resize handle at bottom-right corner
                     let available = ui.available_size();
                     ui.add_space(available.x - 16.0);
-                    let (rect, response) = ui.allocate_exact_size(
-                        egui::vec2(16.0, 16.0),
-                        egui::Sense::drag(),
-                    );
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::drag());
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -1090,10 +1090,8 @@ mod tests {
 
     #[test]
     fn rejects_shell_metacharacters_in_docker_cmd() {
-        let result = ZunduxApp::launch_docker_voicevox(
-            "docker run evil;rm -rf /",
-            "http://127.0.0.1:50021",
-        );
+        let result =
+            ZunduxApp::launch_docker_voicevox("docker run evil;rm -rf /", "http://127.0.0.1:50021");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("metacharacter"));
     }

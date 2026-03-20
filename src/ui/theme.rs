@@ -136,7 +136,10 @@ impl Theme {
 
     /// Format [u8; 4] as "#RRGGBBAA".
     pub fn to_hex(rgba: [u8; 4]) -> String {
-        format!("#{:02X}{:02X}{:02X}{:02X}", rgba[0], rgba[1], rgba[2], rgba[3])
+        format!(
+            "#{:02X}{:02X}{:02X}{:02X}",
+            rgba[0], rgba[1], rgba[2], rgba[3]
+        )
     }
 
     pub fn to_visuals(&self) -> Visuals {

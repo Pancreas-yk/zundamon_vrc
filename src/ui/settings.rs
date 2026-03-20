@@ -313,6 +313,39 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             });
         });
 
+        ui.add_space(8.0);
+
+        // Appearance
+        ui.collapsing("外観", |ui| {
+            let theme = &mut state.config.theme;
+
+            ui.horizontal(|ui| {
+                ui.label("ウィンドウ透明度:");
+                let mut opacity = theme.window_background[3] as f32 / 255.0 * 100.0;
+                if ui
+                    .add(egui::Slider::new(&mut opacity, 10.0..=100.0).suffix("%"))
+                    .changed()
+                {
+                    let alpha = (opacity / 100.0 * 255.0).round() as u8;
+                    theme.window_background[3] = alpha;
+                    state.needs_theme_update = true;
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("タイトルバー透明度:");
+                let mut opacity = theme.titlebar_background[3] as f32 / 255.0 * 100.0;
+                if ui
+                    .add(egui::Slider::new(&mut opacity, 10.0..=100.0).suffix("%"))
+                    .changed()
+                {
+                    let alpha = (opacity / 100.0 * 255.0).round() as u8;
+                    theme.titlebar_background[3] = alpha;
+                    state.needs_theme_update = true;
+                }
+            });
+        });
+
         ui.add_space(12.0);
 
         if ui.button("設定を保存").clicked() {

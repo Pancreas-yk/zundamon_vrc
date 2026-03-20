@@ -90,6 +90,7 @@ pub struct AppState {
     pub error_hovered: bool,
     pub templates_expanded: bool,
     pub adding_template: bool,
+    pub needs_theme_update: bool,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundamon-voicevox";
@@ -175,6 +176,7 @@ impl ZundamonApp {
                 error_hovered: false,
                 templates_expanded: false,
                 adding_template: false,
+                needs_theme_update: false,
             },
             audio_manager,
             ui_rx,
@@ -736,7 +738,11 @@ impl eframe::App for ZundamonApp {
 
         let theme = &self.state.config.theme;
 
-        // Apply theme visuals (cached, only set once)
+        // Apply theme visuals when needed
+        if self.state.needs_theme_update {
+            self.needs_theme_update = true;
+            self.state.needs_theme_update = false;
+        }
         if self.needs_theme_update {
             ctx.set_visuals(theme.to_visuals());
             ctx.set_style(theme.to_style());

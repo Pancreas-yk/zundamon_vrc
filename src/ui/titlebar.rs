@@ -33,8 +33,16 @@ pub fn show(ctx: &egui::Context, theme: &Theme) {
                 );
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Close button
                     let close_btn = ui.add(
-                        egui::Button::new(egui::RichText::new("\u{2715}").size(12.0)).frame(false),
+                        egui::Button::new(
+                            egui::RichText::new(" x ")
+                                .size(14.0)
+                                .color(theme.color(theme.text_secondary))
+                                .family(egui::FontFamily::Monospace),
+                        )
+                        .min_size(egui::vec2(32.0, 24.0))
+                        .frame(false),
                     );
                     if close_btn.clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -47,17 +55,47 @@ pub fn show(ctx: &egui::Context, theme: &Theme) {
                         );
                     }
 
-                    let max_icon = if is_maximized { "\u{25A3}" } else { "\u{25A1}" };
+                    // Maximize/restore button
+                    let max_text = if is_maximized { " = " } else { " o " };
                     let max_btn = ui.add(
-                        egui::Button::new(egui::RichText::new(max_icon).size(12.0)).frame(false),
+                        egui::Button::new(
+                            egui::RichText::new(max_text)
+                                .size(14.0)
+                                .color(theme.color(theme.text_secondary))
+                                .family(egui::FontFamily::Monospace),
+                        )
+                        .min_size(egui::vec2(32.0, 24.0))
+                        .frame(false),
                     );
+                    if max_btn.hovered() {
+                        ui.painter().rect_filled(
+                            max_btn.rect,
+                            CornerRadius::same(4),
+                            egui::Color32::from_white_alpha(20),
+                        );
+                    }
                     if max_btn.clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
                     }
 
+                    // Minimize button
                     let min_btn = ui.add(
-                        egui::Button::new(egui::RichText::new("\u{2212}").size(12.0)).frame(false),
+                        egui::Button::new(
+                            egui::RichText::new(" - ")
+                                .size(14.0)
+                                .color(theme.color(theme.text_secondary))
+                                .family(egui::FontFamily::Monospace),
+                        )
+                        .min_size(egui::vec2(32.0, 24.0))
+                        .frame(false),
                     );
+                    if min_btn.hovered() {
+                        ui.painter().rect_filled(
+                            min_btn.rect,
+                            CornerRadius::same(4),
+                            egui::Color32::from_white_alpha(20),
+                        );
+                    }
                     if min_btn.clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }

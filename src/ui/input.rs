@@ -1,6 +1,6 @@
 use crate::app::AppState;
 use crate::ui::theme::Theme;
-use egui::{Align, CornerRadius, Layout, Vec2};
+use egui::{CornerRadius, Vec2};
 
 const TEMPLATE_MAX_DISPLAY_LEN: usize = 12;
 const TEMPLATE_MAX_VISIBLE_ROWS: usize = 2;
@@ -65,39 +65,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             let shift_held = ui.input(|i| i.modifiers.shift);
             if enter_pressed && !shift_held && !state.input_text.trim().is_empty() {
                 state.pending_send = Some(state.input_text.trim().to_string());
+                state.input_text.clear();
             }
         }
     });
 
-    ui.add_space(theme.spacing_medium);
+    ui.add_space(theme.spacing_small);
 
-    // -- Send button (right-aligned) --
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        let send_enabled = !state.input_text.trim().is_empty() && !state.is_synthesizing;
-        let btn_text = if state.is_synthesizing {
-            "合成中..."
-        } else {
-            "Send"
-        };
-        let btn = ui.add_enabled(
-            send_enabled,
-            egui::Button::new(egui::RichText::new(btn_text).color(theme.color(theme.accent)))
-                .corner_radius(CornerRadius::same(theme.button_rounding as u8))
-                .min_size(Vec2::new(80.0, 28.0)),
+    // -- Status hint --
+    if state.is_synthesizing {
+        ui.label(
+            egui::RichText::new("合成中...")
+                .size(10.0)
+                .color(theme.color(theme.accent)),
         );
-        if btn.clicked() {
-            state.pending_send = Some(state.input_text.trim().to_string());
-        }
-    });
+    }
 
-    ui.add_space(theme.spacing_large);
-
-    // -- Templates --
-    ui.label(
-        egui::RichText::new("TEMPLATES")
-            .size(10.0)
-            .color(theme.color(theme.text_muted)),
-    );
     ui.add_space(theme.spacing_small);
 
     show_template_chips(ui, state, &theme);
@@ -115,7 +98,6 @@ fn truncate_text(text: &str, max_len: usize) -> String {
 }
 
 fn show_template_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
-    let mut delete_index = None;
     let templates = state.config.templates.clone();
     let chip_rounding = CornerRadius::same(theme.chip_rounding as u8);
 
@@ -140,6 +122,7 @@ fn show_template_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
 
             let display_text = truncate_text(template, TEMPLATE_MAX_DISPLAY_LEN);
 
+            // Template chip button
             let btn = ui.add(
                 egui::Button::new(
                     egui::RichText::new(&display_text)
@@ -157,27 +140,6 @@ fn show_template_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
             if btn.clicked() {
                 state.input_text = template.clone();
                 state.pending_send = Some(state.input_text.trim().to_string());
-            }
-
-            if btn.hovered() {
-                let del_rect = egui::Rect::from_min_size(
-                    btn.rect.right_top() + egui::vec2(-14.0, 2.0),
-                    Vec2::new(12.0, 12.0),
-                );
-                if ui
-                    .put(
-                        del_rect,
-                        egui::Button::new(
-                            egui::RichText::new("\u{2715}")
-                                .size(8.0)
-                                .color(theme.color(theme.status_error)),
-                        )
-                        .frame(false),
-                    )
-                    .clicked()
-                {
-                    delete_index = Some(i);
-                }
             }
         }
 
@@ -252,8 +214,4 @@ fn show_template_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
         });
     }
 
-    if let Some(idx) = delete_index {
-        state.config.templates.remove(idx);
-        let _ = state.config.save();
-    }
 }

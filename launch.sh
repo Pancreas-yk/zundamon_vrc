@@ -18,4 +18,13 @@ fi
 # Force X11 backend for IME (Japanese input) support on Wayland
 export WINIT_UNIX_BACKEND=x11
 
+# Set XMODIFIERS if not already set (detect running IME)
+if [ -z "$XMODIFIERS" ]; then
+    if pgrep -x fcitx5 >/dev/null 2>&1 || pgrep -x fcitx >/dev/null 2>&1; then
+        export XMODIFIERS=@im=fcitx
+    elif pgrep -x ibus-daemon >/dev/null 2>&1; then
+        export XMODIFIERS=@im=ibus
+    fi
+fi
+
 exec "$BINARY"

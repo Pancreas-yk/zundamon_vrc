@@ -32,6 +32,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub soundboard_gains: std::collections::HashMap<String, f64>,
     #[serde(default)]
+    pub noise_suppression: bool,
+    #[serde(default)]
     pub silent_words: Vec<String>,
     #[serde(default)]
     pub theme: Theme,
@@ -95,6 +97,7 @@ impl Default for AppConfig {
             target_lufs: -14.0,
             loudness_tolerance: 3.0,
             soundboard_gains: std::collections::HashMap::new(),
+            noise_suppression: false,
             silent_words: Vec::new(),
             theme: Theme::default(),
         }

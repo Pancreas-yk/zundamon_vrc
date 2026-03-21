@@ -278,6 +278,37 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                     .small()
                     .weak(),
             );
+
+            ui.add_space(4.0);
+            let rnnoise_available =
+                crate::audio::virtual_device::VirtualDevice::is_rnnoise_available();
+            let old_ns = state.config.noise_suppression;
+            ui.add_enabled(
+                rnnoise_available,
+                egui::Checkbox::new(
+                    &mut state.config.noise_suppression,
+                    "ノイズキャンセル (RNNoise)",
+                ),
+            );
+            if !rnnoise_available {
+                ui.label(
+                    egui::RichText::new(
+                        "noise-suppression-for-voice がインストールされていません",
+                    )
+                    .small()
+                    .weak()
+                    .color(egui::Color32::from_rgb(255, 160, 0)),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("AIベースのノイズ除去をマイク入力に適用します")
+                        .small()
+                        .weak(),
+                );
+            }
+            if state.config.noise_suppression != old_ns && state.mic_passthrough {
+                state.pending_reconnect_mic = true;
+            }
         });
 
         ui.add_space(8.0);

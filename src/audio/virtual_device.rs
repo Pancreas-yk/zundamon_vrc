@@ -6,6 +6,7 @@ pub struct VirtualDevice {
     sink_module_id: Option<u32>,
     source_module_id: Option<u32>,
     loopback_module_id: Option<u32>,
+    ladspa_module_id: Option<u32>,
 }
 
 impl VirtualDevice {
@@ -15,7 +16,17 @@ impl VirtualDevice {
             sink_module_id: None,
             source_module_id: None,
             loopback_module_id: None,
+            ladspa_module_id: None,
         }
+    }
+
+    /// Check if the RNNoise LADSPA plugin is available on the system.
+    pub fn is_rnnoise_available() -> bool {
+        std::path::Path::new("/usr/lib/ladspa/librnnoise_ladspa.so").exists()
+    }
+
+    fn denoised_source_name(&self) -> String {
+        format!("{}_denoised", self.sink_name)
     }
 
     /// The virtual source name that applications should use as a microphone input.
@@ -171,16 +182,58 @@ impl VirtualDevice {
 
     /// Enable real microphone passthrough: routes a specific PulseAudio source
     /// into the virtual sink so VRChat hears the real mic instead of TTS.
-    pub fn enable_mic_passthrough(&mut self, source_name: &str) -> Result<()> {
+    /// When `noise_suppression` is true and RNNoise is available, an intermediate
+    /// LADSPA source is created to denoise the mic before routing.
+    pub fn enable_mic_passthrough(
+        &mut self,
+        source_name: &str,
+        noise_suppression: bool,
+    ) -> Result<()> {
         if self.loopback_module_id.is_some() {
             return Ok(()); // Already enabled
         }
+
+        let effective_source = if noise_suppression && Self::is_rnnoise_available() {
+            let denoised = self.denoised_source_name();
+            let output = Command::new("pactl")
+                .args([
+                    "load-module",
+                    "module-ladspa-source",
+                    &format!("source_name={}", denoised),
+                    &format!("master={}", source_name),
+                    "plugin=librnnoise_ladspa",
+                    "label=noise_suppressor_mono",
+                ])
+                .output()
+                .context("Failed to create RNNoise LADSPA source")?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::warn!(
+                    "RNNoise LADSPA failed ({}), falling back to raw mic",
+                    stderr.trim()
+                );
+                source_name.to_string()
+            } else {
+                let id_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                self.ladspa_module_id = id_str.parse().ok();
+                tracing::info!("RNNoise noise suppression enabled (module {})", id_str);
+                denoised
+            }
+        } else {
+            if noise_suppression && !Self::is_rnnoise_available() {
+                tracing::warn!(
+                    "noise-suppression-for-voice is not installed, skipping noise cancellation"
+                );
+            }
+            source_name.to_string()
+        };
 
         let output = Command::new("pactl")
             .args([
                 "load-module",
                 "module-loopback",
-                &format!("source={}", source_name),
+                &format!("source={}", effective_source),
                 &format!("sink={}", self.sink_name),
                 "latency_msec=30",
             ])
@@ -188,6 +241,7 @@ impl VirtualDevice {
             .context("Failed to create mic loopback")?;
 
         if !output.status.success() {
+            self.unload_ladspa();
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("module-loopback failed: {}", stderr.trim());
         }
@@ -196,6 +250,22 @@ impl VirtualDevice {
         self.loopback_module_id = id_str.parse().ok();
         tracing::info!("Mic passthrough enabled (module {})", id_str);
         Ok(())
+    }
+
+    fn unload_ladspa(&mut self) {
+        if let Some(id) = self.ladspa_module_id.take() {
+            let output = Command::new("pactl")
+                .args(["unload-module", &id.to_string()])
+                .output();
+            match output {
+                Ok(o) if o.status.success() => {
+                    tracing::info!("Unloaded RNNoise LADSPA module {}", id);
+                }
+                _ => {
+                    tracing::warn!("Failed to unload RNNoise LADSPA module {}", id);
+                }
+            }
+        }
     }
 
     /// Disable real microphone passthrough.
@@ -212,6 +282,7 @@ impl VirtualDevice {
                 tracing::info!("Mic passthrough disabled (module {})", id);
             }
         }
+        self.unload_ladspa();
         Ok(())
     }
 
@@ -222,6 +293,7 @@ impl VirtualDevice {
             .output();
         if let Ok(output) = output {
             let stdout = String::from_utf8_lossy(&output.stdout);
+            let denoised = self.denoised_source_name();
             for line in stdout.lines() {
                 if line.contains("module-loopback") && line.contains(&self.sink_name) {
                     if let Some(id_str) = line.split_whitespace().next() {
@@ -235,13 +307,22 @@ impl VirtualDevice {
                         );
                     }
                 }
+                if line.contains("module-ladspa-source") && line.contains(&denoised) {
+                    if let Some(id_str) = line.split_whitespace().next() {
+                        let _ = Command::new("pactl")
+                            .args(["unload-module", id_str])
+                            .output();
+                        tracing::info!("Cleaned up stale LADSPA module {}", id_str);
+                    }
+                }
             }
         }
     }
 
     pub fn destroy(&mut self) -> Result<()> {
-        // Destroy loopback first
+        // Destroy loopback and LADSPA first
         let _ = self.disable_mic_passthrough();
+        self.unload_ladspa();
         // Destroy virtual source first, then the sink
         if let Some(id) = self.source_module_id.take() {
             let output = Command::new("pactl")

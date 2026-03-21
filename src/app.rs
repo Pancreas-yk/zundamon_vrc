@@ -588,7 +588,7 @@ impl ZunduxApp {
                     .output();
                 self.audio_manager
                     .virtual_device
-                    .enable_mic_passthrough(source)
+                    .enable_mic_passthrough(source, self.state.config.noise_suppression)
             };
             match result {
                 Ok(()) => {
@@ -626,7 +626,7 @@ impl ZunduxApp {
             match self
                 .audio_manager
                 .virtual_device
-                .enable_mic_passthrough(source)
+                .enable_mic_passthrough(source, self.state.config.noise_suppression)
             {
                 Ok(()) => {
                     self.state.mic_passthrough =

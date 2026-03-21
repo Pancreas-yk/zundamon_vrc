@@ -153,6 +153,22 @@ else
     info "すべての依存パッケージがインストール済みです"
 fi
 
+# Optional: RNNoise noise suppression
+if ! pacman -Qi noise-suppression-for-voice &>/dev/null; then
+    echo ""
+    info "noise-suppression-for-voice (ノイズキャンセル) が未インストールです"
+    read -rp "インストールしますか？ (AURヘルパーが必要) [y/N]: " install_rnnoise
+    if [ "$install_rnnoise" = "y" ] || [ "$install_rnnoise" = "Y" ]; then
+        if command -v yay &>/dev/null; then
+            yay -S --needed noise-suppression-for-voice
+        elif command -v paru &>/dev/null; then
+            paru -S --needed noise-suppression-for-voice
+        else
+            warn "AURヘルパー (yay/paru) が見つかりません。手動でインストールしてください"
+        fi
+    fi
+fi
+
 # ---------- Step 2: GPU検出 & VOICEVOXイメージ選択 ----------
 VOICEVOX_IMAGE="voicevox/voicevox_engine:latest"
 GPU_FLAGS=""

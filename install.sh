@@ -123,10 +123,21 @@ fi
 info "依存パッケージを確認中..."
 
 if [ "${1:-}" = "--from-source" ]; then
-    PACKAGES=(base-devel rust docker pulseaudio noto-fonts-cjk ffmpeg)
+    PACKAGES=(base-devel rust docker noto-fonts-cjk ffmpeg)
 else
-    PACKAGES=(docker pulseaudio noto-fonts-cjk ffmpeg)
+    PACKAGES=(docker noto-fonts-cjk ffmpeg)
 fi
+
+# PulseAudio tools (pactl, paplay) can come from pulseaudio or pipewire-pulse
+if ! command -v pactl &>/dev/null; then
+    # Prefer pipewire-pulse on modern systems, fall back to pulseaudio
+    if pacman -Si pipewire-pulse &>/dev/null; then
+        PACKAGES+=(pipewire-pulse)
+    else
+        PACKAGES+=(pulseaudio)
+    fi
+fi
+
 MISSING=()
 
 for pkg in "${PACKAGES[@]}"; do

@@ -29,6 +29,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         {
             state.pending_soundboard_scan = true;
         }
+        if !state.soundboard_loudness.is_empty() {
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("全て自動調整")
+                            .size(10.0)
+                            .color(theme.color(theme.text_secondary)),
+                    )
+                    .corner_radius(CornerRadius::same(theme.chip_rounding as u8))
+                    .fill(theme.color(theme.chip_background)),
+                )
+                .clicked()
+            {
+                state.pending_normalize_all = true;
+            }
+        }
     });
 
     ui.add_space(theme.spacing_medium);
@@ -46,6 +62,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         );
     } else {
         show_sound_chips(ui, state, &theme);
+        if !state.soundboard_loudness.is_empty() {
+            ui.label(
+                egui::RichText::new(format!(
+                    "ターゲット: {} LUFS | クリックで再生",
+                    state.config.target_lufs
+                ))
+                .size(9.0)
+                .color(theme.color(theme.text_muted)),
+            );
+        }
     }
 
     if state.is_soundboard_playing {
@@ -187,6 +213,8 @@ fn show_sound_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
         for (name, path) in &files {
             let display_name = truncate_name(name, BUTTON_MAX_DISPLAY_LEN);
 
+            let loudness = state.soundboard_loudness.get(path);
+
             let btn = ui.add_enabled(
                 enabled,
                 egui::Button::new(
@@ -198,7 +226,28 @@ fn show_sound_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
                 .fill(theme.color(theme.chip_background)),
             );
 
-            // Show full name on hover if truncated
+            if let Some(info) = loudness {
+                let gain = state
+                    .config
+                    .soundboard_gains
+                    .get(&path.to_string_lossy().to_string())
+                    .copied()
+                    .unwrap_or(0.0);
+                let effective_lufs = info.lufs + gain;
+
+                let color = loudness_color(
+                    effective_lufs,
+                    state.config.target_lufs,
+                    state.config.loudness_tolerance,
+                    theme,
+                );
+                ui.label(
+                    egui::RichText::new(format!("{:.0}", effective_lufs))
+                        .size(9.0)
+                        .color(color),
+                );
+            }
+
             let stem = name
                 .strip_suffix(".wav")
                 .or_else(|| name.strip_suffix(".mp3"))
@@ -214,4 +263,19 @@ fn show_sound_chips(ui: &mut egui::Ui, state: &mut AppState, theme: &Theme) {
             }
         }
     });
+}
+
+fn loudness_color(
+    lufs: f64,
+    target: f64,
+    tolerance: f64,
+    theme: &Theme,
+) -> egui::Color32 {
+    if lufs > target + tolerance {
+        theme.color(theme.status_error)
+    } else if lufs < target - tolerance {
+        theme.color(theme.text_muted)
+    } else {
+        theme.color(theme.status_ok)
+    }
 }

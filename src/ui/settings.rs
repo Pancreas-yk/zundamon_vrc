@@ -366,6 +366,45 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                     }
                 }
             });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("ターゲット音量 (LUFS):");
+                ui.add(
+                    egui::Slider::new(&mut state.config.target_lufs, -24.0..=-6.0)
+                        .step_by(0.5),
+                );
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("許容範囲 (±LUFS):");
+                ui.add(
+                    egui::Slider::new(&mut state.config.loudness_tolerance, 1.0..=6.0)
+                        .step_by(0.5),
+                );
+            });
+
+            ui.add_space(4.0);
+            if !state.config.soundboard_gains.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "調整済み: {}ファイル",
+                            state.config.soundboard_gains.len()
+                        ))
+                        .size(10.0)
+                        .color(state.config.theme.color(state.config.theme.text_muted)),
+                    );
+                    if ui.button("ゲインリセット").clicked() {
+                        state.config.soundboard_gains.clear();
+                        let _ = state.config.save();
+                        state.pending_loudness_scan = true;
+                    }
+                });
+            }
         });
 
         ui.add_space(8.0);

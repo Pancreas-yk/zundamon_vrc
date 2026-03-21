@@ -479,7 +479,7 @@ impl ZunduxApp {
                     for entry in entries.flatten() {
                         let p = entry.path();
                         if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                            if matches!(ext.to_lowercase().as_str(), "wav" | "mp3" | "ogg") {
+                            if matches!(ext.to_lowercase().as_str(), "wav" | "mp3" | "ogg" | "flac") {
                                 let name = p
                                     .file_stem()
                                     .and_then(|s| s.to_str())
@@ -495,6 +495,45 @@ impl ZunduxApp {
             }
             files.sort_by(|a, b| a.0.cmp(&b.0));
             self.state.soundboard_files = files;
+            self.state.pending_loudness_scan = true;
+        }
+
+        if self.state.pending_loudness_scan {
+            self.state.pending_loudness_scan = false;
+            let files: Vec<std::path::PathBuf> = self
+                .state
+                .soundboard_files
+                .iter()
+                .map(|(_, path)| path.clone())
+                .collect();
+            let ui_tx = self.ui_tx.clone();
+            std::thread::spawn(move || {
+                let mut results = std::collections::HashMap::new();
+                for path in &files {
+                    match crate::audio::loudness::analyze_loudness(path) {
+                        Ok(info) => {
+                            results.insert(path.clone(), info);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Loudness analysis failed for {}: {}", path.display(), e);
+                        }
+                    }
+                }
+                let _ = ui_tx.send(UiMessage::LoudnessScanComplete(results));
+            });
+        }
+
+        if self.state.pending_normalize_all {
+            self.state.pending_normalize_all = false;
+            for (path, info) in &self.state.soundboard_loudness {
+                let gain = crate::audio::loudness::calculate_gain_db(
+                    info.lufs,
+                    self.state.config.target_lufs,
+                );
+                let key = path.to_string_lossy().to_string();
+                self.state.config.soundboard_gains.insert(key, gain);
+            }
+            let _ = self.state.config.save();
         }
 
         if self.state.pending_refresh_mic_sources {
@@ -607,6 +646,12 @@ impl ZunduxApp {
             }
             // Reset cancel signal for new playback
             self.soundboard_cancel.store(false, Ordering::SeqCst);
+            let gain_db = self
+                .state
+                .config
+                .soundboard_gains
+                .get(&file_path.to_string_lossy().to_string())
+                .copied();
             let device_name = self.state.config.virtual_device_name.clone();
             let monitor = self.state.config.monitor_audio;
             let playing = self.is_soundboard_playing.clone();
@@ -621,6 +666,7 @@ impl ZunduxApp {
                     monitor,
                     pids,
                     cancel,
+                    gain_db,
                 ) {
                     tracing::error!("Soundboard playback error: {}", e);
                 }

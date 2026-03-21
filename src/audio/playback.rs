@@ -68,11 +68,7 @@ fn play_with_rodio_cancellable(
     let target_device = host
         .output_devices()
         .context("Failed to enumerate output devices")?
-        .find(|d| {
-            d.name()
-                .map(|n| n.contains(device_name))
-                .unwrap_or(false)
-        })
+        .find(|d| d.name().map(|n| n.contains(device_name)).unwrap_or(false))
         .context("Virtual device not found in cpal devices")?;
 
     let (_stream, handle) =
@@ -103,6 +99,7 @@ pub fn play_file(
     monitor: bool,
     pids: std::sync::Arc<std::sync::Mutex<Vec<u32>>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    gain_db: Option<f64>,
 ) -> Result<()> {
     if monitor {
         let path_clone = path.to_path_buf();
@@ -118,27 +115,43 @@ pub fn play_file(
     }
 
     // Use ffmpeg to decode any format → raw PCM, then pipe to paplay
-    let mut ffmpeg = Command::new("ffmpeg")
-        .args(["-i"])
-        .arg(path)
-        .args([
-            "-f", "s16le",
-            "-acodec", "pcm_s16le",
-            "-ac", "1",
-            "-ar", "48000",
-            "-loglevel", "error",
-            "pipe:1",
-        ])
+    let mut ffmpeg_cmd = Command::new("ffmpeg");
+    ffmpeg_cmd.args(["-i"]).arg(path);
+
+    // Apply gain via ffmpeg volume filter if specified
+    if let Some(db) = gain_db {
+        ffmpeg_cmd.args(["-af", &format!("volume={}dB", db)]);
+    }
+
+    ffmpeg_cmd.args([
+        "-f",
+        "s16le",
+        "-acodec",
+        "pcm_s16le",
+        "-ac",
+        "1",
+        "-ar",
+        "48000",
+        "-loglevel",
+        "error",
+        "pipe:1",
+    ]);
+
+    let mut ffmpeg = ffmpeg_cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .context("Failed to spawn ffmpeg — is ffmpeg installed?")?;
 
-    let ffmpeg_stdout = ffmpeg.stdout.take().context("Failed to get ffmpeg stdout")?;
+    let ffmpeg_stdout = ffmpeg
+        .stdout
+        .take()
+        .context("Failed to get ffmpeg stdout")?;
 
     let mut paplay = Command::new("paplay")
         .args([
-            "--device", device_name,
+            "--device",
+            device_name,
             "--raw",
             "--format=s16le",
             "--rate=48000",
@@ -193,8 +206,7 @@ fn play_file_default_output(
     path: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<()> {
-    let (_stream, handle) =
-        OutputStream::try_default().context("Failed to open default output")?;
+    let (_stream, handle) = OutputStream::try_default().context("Failed to open default output")?;
     let sink = Sink::try_new(&handle).context("Failed to create sink")?;
     let file = std::fs::File::open(path).context("Failed to open audio file")?;
     let source = rodio::Decoder::new(std::io::BufReader::new(file))
@@ -220,7 +232,14 @@ fn play_with_paplay(
     use std::process::Stdio;
 
     let mut child = Command::new("paplay")
-        .args(["--device", device_name, "--raw", "--format=s16le", "--rate=24000", "--channels=1"])
+        .args([
+            "--device",
+            device_name,
+            "--raw",
+            "--format=s16le",
+            "--rate=24000",
+            "--channels=1",
+        ])
         .stdin(Stdio::piped())
         .spawn()
         .context("Failed to spawn paplay")?;
@@ -233,7 +252,9 @@ fn play_with_paplay(
     };
 
     if let Some(ref mut stdin) = child.stdin {
-        stdin.write_all(pcm_data).context("Failed to write to paplay stdin")?;
+        stdin
+            .write_all(pcm_data)
+            .context("Failed to write to paplay stdin")?;
     }
     drop(child.stdin.take());
 

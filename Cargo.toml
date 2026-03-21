@@ -24,3 +24,6 @@ shell-words = "1"
 ctrlc = "3"
 libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[patch.crates-io]
+winit = { path = "patches/winit" }

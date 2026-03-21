@@ -267,7 +267,8 @@ cat > "$INSTALL_BIN/zundux_tts_launch.sh" << 'LAUNCHER_EOF'
 VOICEVOX_CONTAINER="zundux-voicevox"
 
 # Force X11 backend for IME (Japanese input) support on Wayland
-export WINIT_UNIX_BACKEND=x11
+# (WINIT_UNIX_BACKEND was removed in winit 0.29+; unsetting WAYLAND_DISPLAY forces X11)
+unset WAYLAND_DISPLAY
 
 # Set XMODIFIERS if not already set (detect running IME)
 if [ -z "${XMODIFIERS:-}" ]; then

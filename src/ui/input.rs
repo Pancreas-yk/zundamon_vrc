@@ -10,36 +10,36 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.add_space(theme.spacing_large);
 
-    // -- Speaker selector --
+    // -- Preset selector --
     ui.label(
-        egui::RichText::new("SPEAKER")
+        egui::RichText::new("PRESET")
             .size(10.0)
             .color(theme.color(theme.text_muted)),
     );
     ui.add_space(theme.spacing_small);
 
-    let selected_text = state
-        .speakers
-        .iter()
-        .flat_map(|s| s.styles.iter().map(move |st| (s, st)))
-        .find(|(_, st)| st.id == state.config.speaker_id)
-        .map(|(s, st)| format!("{} - {}", s.name, st.name))
-        .unwrap_or_else(|| format!("Speaker ID: {}", state.config.speaker_id));
+    let preset_label = state
+        .active_preset_idx
+        .and_then(|i| state.config.presets.get(i))
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "─".to_string());
 
-    egui::ComboBox::from_id_salt("speaker_select")
-        .selected_text(&selected_text)
+    egui::ComboBox::from_id_salt("preset_select")
+        .selected_text(&preset_label)
         .width(ui.available_width() - theme.spacing_medium)
         .show_ui(ui, |ui| {
-            for speaker in &state.speakers {
-                for style in &speaker.styles {
-                    let label = format!("{} - {}", speaker.name, style.name);
-                    if ui
-                        .selectable_value(&mut state.config.speaker_id, style.id, &label)
-                        .changed()
-                    {
-                        let _ = state.config.save();
-                    }
+            for i in 0..state.config.presets.len() {
+                let name = state.config.presets[i].name.clone();
+                let selected = state.active_preset_idx == Some(i);
+                if ui.selectable_label(selected, &name).clicked() {
+                    state.active_preset_idx = Some(i);
+                    state.config.speaker_id = state.config.presets[i].speaker_id;
+                    state.config.synth_params = state.config.presets[i].synth_params.clone();
+                    let _ = state.config.save();
                 }
+            }
+            if state.config.presets.is_empty() {
+                ui.label("設定でプリセットを作成してください");
             }
         });
 
@@ -69,11 +69,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         }
 
         if response.has_focus() {
-            // Skip Enter-to-send when IME is active (composing or just committed).
-            // IME confirmation also produces an Enter key event, so without this
-            // guard the text would be sent (or cleared) on every IME commit.
-            let ime_active =
-                ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Ime(_))));
+            // Skip Enter-to-send when IME is actively composing or just committed.
+            // Enabled/Disabled events (fired by fcitx5 on mode switch) are excluded so
+            // they don't accidentally block Enter-to-send during normal typing.
+            let ime_active = ui.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Ime(egui::ImeEvent::Preedit(_))
+                            | egui::Event::Ime(egui::ImeEvent::Commit(_))
+                    )
+                })
+            });
 
             if !ime_active {
                 let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));

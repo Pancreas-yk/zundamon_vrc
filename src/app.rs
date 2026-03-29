@@ -104,6 +104,10 @@ pub struct AppState {
     pub pending_normalize_all: bool,
     pub pending_loudness_scan: bool,
     pub needs_initial_focus: bool,
+    pub active_preset_idx: Option<usize>,
+    pub preset_edit_idx: Option<usize>,
+    pub preset_adding: bool,
+    pub preset_edit_buf: Option<crate::config::SpeakerPreset>,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundux-voicevox";
@@ -203,6 +207,10 @@ impl ZunduxApp {
                 pending_normalize_all: false,
                 pending_loudness_scan: true,
                 needs_initial_focus: true,
+                active_preset_idx: None,
+                preset_edit_idx: None,
+                preset_adding: false,
+                preset_edit_buf: None,
             },
             audio_manager,
             ui_rx,

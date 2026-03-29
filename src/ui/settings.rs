@@ -123,6 +123,184 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
+        // Speaker presets
+        ui.collapsing("スピーカープリセット", |ui| {
+            // --- Edit / New form ---
+            let mut save_clicked = false;
+            let mut cancel_clicked = false;
+
+            if state.preset_adding || state.preset_edit_idx.is_some() {
+                let speakers_snapshot = state.speakers.clone();
+                if let Some(buf) = state.preset_edit_buf.as_mut() {
+                    ui.horizontal(|ui| {
+                        ui.label("名前:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut buf.name)
+                                .desired_width(ui.available_width()),
+                        );
+                    });
+                    ui.add_space(4.0);
+
+                    let speaker_text = speakers_snapshot
+                        .iter()
+                        .flat_map(|s| s.styles.iter().map(move |st| (s, st)))
+                        .find(|(_, st)| st.id == buf.speaker_id)
+                        .map(|(s, st)| format!("{} - {}", s.name, st.name))
+                        .unwrap_or_else(|| format!("Speaker ID: {}", buf.speaker_id));
+
+                    ui.horizontal(|ui| {
+                        ui.label("スピーカー:");
+                        egui::ComboBox::from_id_salt("preset_edit_speaker")
+                            .selected_text(&speaker_text)
+                            .show_ui(ui, |ui| {
+                                for speaker in &speakers_snapshot {
+                                    for style in &speaker.styles {
+                                        let label =
+                                            format!("{} - {}", speaker.name, style.name);
+                                        ui.selectable_value(
+                                            &mut buf.speaker_id,
+                                            style.id,
+                                            &label,
+                                        );
+                                    }
+                                }
+                            });
+                    });
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("速度:");
+                        ui.add(
+                            egui::Slider::new(&mut buf.synth_params.speed_scale, 0.5..=2.0)
+                                .step_by(0.05),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("ピッチ:");
+                        ui.add(
+                            egui::Slider::new(
+                                &mut buf.synth_params.pitch_scale,
+                                -0.15..=0.15,
+                            )
+                            .step_by(0.01),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("抑揚:");
+                        ui.add(
+                            egui::Slider::new(
+                                &mut buf.synth_params.intonation_scale,
+                                0.0..=2.0,
+                            )
+                            .step_by(0.05),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("音量:");
+                        ui.add(
+                            egui::Slider::new(&mut buf.synth_params.volume_scale, 0.0..=2.0)
+                                .step_by(0.05),
+                        );
+                    });
+                    ui.add_space(4.0);
+
+                    ui.horizontal(|ui| {
+                        save_clicked = ui.button("保存").clicked();
+                        cancel_clicked = ui.button("キャンセル").clicked();
+                    });
+                }
+                ui.separator();
+            }
+
+            if save_clicked {
+                if let Some(preset) = state.preset_edit_buf.take() {
+                    if !preset.name.trim().is_empty() {
+                        if state.preset_adding {
+                            state.config.presets.push(preset);
+                        } else if let Some(idx) = state.preset_edit_idx {
+                            if idx < state.config.presets.len() {
+                                state.config.presets[idx] = preset;
+                            }
+                        }
+                        let _ = state.config.save();
+                    }
+                }
+                state.preset_adding = false;
+                state.preset_edit_idx = None;
+            }
+            if cancel_clicked {
+                state.preset_adding = false;
+                state.preset_edit_idx = None;
+                state.preset_edit_buf = None;
+            }
+
+            // --- Preset list ---
+            let mut to_edit: Option<usize> = None;
+            let mut to_delete: Option<usize> = None;
+
+            for i in 0..state.config.presets.len() {
+                let preset = &state.config.presets[i];
+                ui.horizontal(|ui| {
+                    let active = state.active_preset_idx == Some(i);
+                    if active {
+                        ui.label(
+                            egui::RichText::new("▶")
+                                .color(state.config.theme.color(state.config.theme.status_ok)),
+                        );
+                    } else {
+                        ui.label("　");
+                    }
+                    ui.label(&preset.name);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("削除").clicked() {
+                            to_delete = Some(i);
+                        }
+                        if ui.small_button("編集").clicked() {
+                            to_edit = Some(i);
+                        }
+                    });
+                });
+            }
+
+            if let Some(i) = to_edit {
+                if state.preset_edit_idx != Some(i) {
+                    state.preset_edit_idx = Some(i);
+                    state.preset_adding = false;
+                    state.preset_edit_buf = Some(state.config.presets[i].clone());
+                }
+            }
+            if let Some(i) = to_delete {
+                state.config.presets.remove(i);
+                if state.active_preset_idx == Some(i) {
+                    state.active_preset_idx = None;
+                } else if let Some(idx) = state.active_preset_idx {
+                    if idx > i {
+                        state.active_preset_idx = Some(idx - 1);
+                    }
+                }
+                if state.preset_edit_idx == Some(i) {
+                    state.preset_edit_idx = None;
+                    state.preset_edit_buf = None;
+                }
+                let _ = state.config.save();
+            }
+
+            ui.add_space(4.0);
+            if !state.preset_adding && state.preset_edit_idx.is_none() {
+                if ui.button("＋ 新規作成").clicked() {
+                    state.preset_adding = true;
+                    state.preset_edit_idx = None;
+                    state.preset_edit_buf = Some(crate::config::SpeakerPreset {
+                        name: String::new(),
+                        speaker_id: state.config.speaker_id,
+                        synth_params: state.config.synth_params.clone(),
+                    });
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+
         // Speaker selection
         ui.collapsing("スピーカー選択", |ui| {
             for speaker in &state.speakers {
@@ -404,7 +582,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.horizontal(|ui| {
                 ui.label("ターゲット音量 (LUFS):");
-                ui.add(egui::Slider::new(&mut state.config.target_lufs, -24.0..=-6.0).step_by(0.5));
+                ui.add(egui::Slider::new(&mut state.config.target_lufs, -96.0..=-6.0).step_by(0.5));
             });
 
             ui.horizontal(|ui| {

@@ -37,6 +37,8 @@ pub struct AppConfig {
     pub silent_words: Vec<String>,
     #[serde(default)]
     pub theme: Theme,
+    #[serde(default)]
+    pub presets: Vec<SpeakerPreset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +48,13 @@ pub struct SynthParamsConfig {
     pub pitch_scale: f64,
     pub intonation_scale: f64,
     pub volume_scale: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpeakerPreset {
+    pub name: String,
+    pub speaker_id: u32,
+    pub synth_params: SynthParamsConfig,
 }
 
 fn default_target_lufs() -> f64 {
@@ -100,6 +109,23 @@ impl Default for AppConfig {
             noise_suppression: false,
             silent_words: Vec::new(),
             theme: Theme::default(),
+            presets: vec![
+                SpeakerPreset {
+                    name: "デフォルト：ずんだもん".to_string(),
+                    speaker_id: 3,
+                    synth_params: SynthParamsConfig::default(),
+                },
+                SpeakerPreset {
+                    name: "デフォルト：めたん".to_string(),
+                    speaker_id: 2,
+                    synth_params: SynthParamsConfig::default(),
+                },
+                SpeakerPreset {
+                    name: "デフォルト：つむぎ".to_string(),
+                    speaker_id: 8,
+                    synth_params: SynthParamsConfig::default(),
+                },
+            ],
         }
     }
 }
@@ -160,6 +186,23 @@ impl AppConfig {
         }
 
         self.theme = std::mem::take(&mut self.theme).validated();
+
+        // Migrate: if no presets exist, create one from the current speaker/synth settings.
+        if self.presets.is_empty() {
+            self.presets.push(SpeakerPreset {
+                name: format!("Speaker {}", self.speaker_id),
+                speaker_id: self.speaker_id,
+                synth_params: self.synth_params.clone(),
+            });
+        }
+        if self.presets.len() > 50 {
+            self.presets.truncate(50);
+        }
+        for p in &mut self.presets {
+            if p.name.len() > 64 {
+                p.name = p.name.chars().take(64).collect();
+            }
+        }
     }
 
     pub fn save(&self) -> Result<()> {

@@ -1005,17 +1005,50 @@ impl EventProcessor {
         {
             let written = wt.xconn.lookup_utf8(ic, xev);
             if !written.is_empty() {
-                let event = Event::WindowEvent {
-                    window_id,
-                    event: WindowEvent::Ime(Ime::Preedit(String::new(), None)),
-                };
-                callback(&self.target, event);
+                // If lookup_utf8 returned only control characters (e.g. "\n" from an
+                // Enter press when is_composing was left true after ImeEvent::End because
+                // fcitx5 filtered the confirmation key), the IME already committed its
+                // text via preedit callbacks and no real commit text arrives here.
+                // Reset is_composing and re-emit the key as a regular KeyboardInput so
+                // Enter-to-send still fires.
+                let is_control_only = written.chars().all(|c| c.is_control());
+                if is_control_only {
+                    self.is_composing = false;
+                    if keycode != 0 {
+                        if let Some(mut key_processor) = self.xkb_context.key_context() {
+                            let event = key_processor.process_key_event(keycode, state, repeat);
+                            let event = Event::WindowEvent {
+                                window_id,
+                                event: WindowEvent::KeyboardInput {
+                                    device_id,
+                                    event,
+                                    is_synthetic: false,
+                                },
+                            };
+                            callback(&self.target, event);
+                        }
+                    }
+                } else {
+                    // Use Some((0,0)) instead of None so egui-winit calls ime_event_enable()
+                    // rather than ime_event_disable().  This ensures egui's state.ime_cursor_range
+                    // gets updated to the current cursor position before the Commit event is
+                    // processed — otherwise egui's commit condition
+                    // (cursor_range.secondary.index == ime_cursor_range.secondary.index) fails
+                    // whenever the text field is non-empty (cursor != 0).
+                    let event = Event::WindowEvent {
+                        window_id,
+                        event: WindowEvent::Ime(Ime::Preedit(String::new(), Some((0, 0)))),
+                    };
+                    callback(&self.target, event);
 
-                let event =
-                    Event::WindowEvent { window_id, event: WindowEvent::Ime(Ime::Commit(written)) };
+                    let event = Event::WindowEvent {
+                        window_id,
+                        event: WindowEvent::Ime(Ime::Commit(written)),
+                    };
 
-                self.is_composing = false;
-                callback(&self.target, event);
+                    self.is_composing = false;
+                    callback(&self.target, event);
+                }
             } else {
                 // lookup_utf8 returned nothing — composition was cancelled
                 // (e.g. Escape) or the IME sent no commit string.  Reset

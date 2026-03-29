@@ -287,6 +287,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(4.0);
             if !state.preset_adding && state.preset_edit_idx.is_none() {
+                ui.horizontal(|ui| {
                 if ui.button("＋ 新規作成").clicked() {
                     state.preset_adding = true;
                     state.preset_edit_idx = None;
@@ -296,6 +297,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                         synth_params: state.config.synth_params.clone(),
                     });
                 }
+                if ui.button("デフォルトに戻す").clicked() {
+                    state.config.presets = crate::config::AppConfig::default_presets();
+                    state.active_preset_idx = None;
+                    let _ = state.config.save();
+                }
+                });
             }
         });
 

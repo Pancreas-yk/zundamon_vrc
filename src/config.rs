@@ -109,28 +109,32 @@ impl Default for AppConfig {
             noise_suppression: false,
             silent_words: Vec::new(),
             theme: Theme::default(),
-            presets: vec![
-                SpeakerPreset {
-                    name: "デフォルト：ずんだもん".to_string(),
-                    speaker_id: 3,
-                    synth_params: SynthParamsConfig::default(),
-                },
-                SpeakerPreset {
-                    name: "デフォルト：めたん".to_string(),
-                    speaker_id: 2,
-                    synth_params: SynthParamsConfig::default(),
-                },
-                SpeakerPreset {
-                    name: "デフォルト：つむぎ".to_string(),
-                    speaker_id: 8,
-                    synth_params: SynthParamsConfig::default(),
-                },
-            ],
+            presets: Self::default_presets(),
         }
     }
 }
 
 impl AppConfig {
+    pub fn default_presets() -> Vec<SpeakerPreset> {
+        vec![
+            SpeakerPreset {
+                name: "デフォルト：ずんだもん".to_string(),
+                speaker_id: 3,
+                synth_params: SynthParamsConfig::default(),
+            },
+            SpeakerPreset {
+                name: "デフォルト：めたん".to_string(),
+                speaker_id: 2,
+                synth_params: SynthParamsConfig::default(),
+            },
+            SpeakerPreset {
+                name: "デフォルト：つむぎ".to_string(),
+                speaker_id: 8,
+                synth_params: SynthParamsConfig::default(),
+            },
+        ]
+    }
+
     fn config_dir() -> Result<PathBuf> {
         let dirs = ProjectDirs::from("", "", "zundux_tts")
             .context("Failed to determine config directory")?;
@@ -187,13 +191,9 @@ impl AppConfig {
 
         self.theme = std::mem::take(&mut self.theme).validated();
 
-        // Migrate: if no presets exist, create one from the current speaker/synth settings.
+        // Migrate: if no presets exist, add the three named defaults.
         if self.presets.is_empty() {
-            self.presets.push(SpeakerPreset {
-                name: format!("Speaker {}", self.speaker_id),
-                speaker_id: self.speaker_id,
-                synth_params: self.synth_params.clone(),
-            });
+            self.presets = Self::default_presets();
         }
         if self.presets.len() > 50 {
             self.presets.truncate(50);

@@ -7,6 +7,18 @@ use std::sync::Arc;
 use super::types::{Speaker, Style, SynthParams};
 use super::TtsEngine;
 
+/// (display_name, filename) — reference audio files in the `reference/` directory.
+pub const VOICEGER_EMOTIONS: &[(&str, &str)] = &[
+    ("ノーマル",  "01_ref_emoNormal026.wav"),
+    ("甘え",     "02_ref_emoAma026.wav"),
+    ("ツン",     "03_ref_emoTsun026.wav"),
+    ("セクシー", "04_ref_emoSexy026.wav"),
+    ("さっさ",   "05_ref_emoSasa026.wav"),
+    ("ぼそぼそ", "06_ref_emoMurmur026.wav"),
+    ("ヒーロー", "07_ref_emoHero026.wav"),
+    ("泣き",     "08_ref_emoSobbing026.wav"),
+];
+
 /// (lang_code, display_name, style_id)
 pub const VOICEGER_LANGUAGES: &[(&str, &str, u32)] = &[
     ("ja", "日本語", 0),
@@ -171,11 +183,13 @@ impl TtsEngine for VoicegerEngine {
         // Higher intonation = higher temperature = more expressive generation.
         let temperature = (0.5 + params.intonation_scale * 0.5).clamp(0.1, 2.0);
 
+        let ref_audio = params.aux_ref_audio.as_deref().unwrap_or(&self.ref_audio_path);
+
         let url = format!("{}/tts", self.base_url);
         let body = serde_json::json!({
             "text": text,
             "text_lang": text_lang,
-            "ref_audio_path": self.ref_audio_path,
+            "ref_audio_path": ref_audio,
             "prompt_text": self.prompt_text,
             "prompt_lang": self.prompt_lang,
             "speed_factor": params.speed_scale,
@@ -184,7 +198,7 @@ impl TtsEngine for VoicegerEngine {
             "media_type": "wav",
         });
 
-        tracing::info!("Voiceger synthesize: text={:?} lang={} temp={:.2}", text, text_lang, temperature);
+        tracing::info!("Voiceger synthesize: text={:?} lang={} temp={:.2} ref={}", text, text_lang, temperature, ref_audio);
 
         let resp = self
             .client

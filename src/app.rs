@@ -485,12 +485,31 @@ impl ZunduxApp {
                 } else {
 
                 let params = active_preset
-                    .map(|p| SynthParams {
-                        speaker_id: p.speaker_id,
-                        speed_scale: p.synth_params.speed_scale,
-                        pitch_scale: p.synth_params.pitch_scale,
-                        intonation_scale: p.synth_params.intonation_scale,
-                        volume_scale: p.synth_params.volume_scale,
+                    .map(|p| {
+                        // Resolve Voiceger emotion → ref audio path override.
+                        let aux_ref_audio = if p.engine == crate::config::TtsEngineType::Voiceger
+                            && !p.voiceger_emotion.is_empty()
+                        {
+                            crate::tts::voiceger::VOICEGER_EMOTIONS
+                                .iter()
+                                .find(|(name, _)| *name == p.voiceger_emotion)
+                                .and_then(|(_, filename)| {
+                                    // Derive reference directory from global voiceger_ref_audio.
+                                    let base = std::path::Path::new(&self.state.config.voiceger_ref_audio)
+                                        .parent()?;
+                                    Some(base.join(filename).to_string_lossy().into_owned())
+                                })
+                        } else {
+                            None
+                        };
+                        SynthParams {
+                            speaker_id: p.speaker_id,
+                            speed_scale: p.synth_params.speed_scale,
+                            pitch_scale: p.synth_params.pitch_scale,
+                            intonation_scale: p.synth_params.intonation_scale,
+                            volume_scale: p.synth_params.volume_scale,
+                            aux_ref_audio,
+                        }
                     })
                     .unwrap_or_else(|| SynthParams::from_config(&self.state.config));
                 // Apply Voiceger client-side pronunciation dictionary (per language)

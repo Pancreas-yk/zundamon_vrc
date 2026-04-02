@@ -21,6 +21,8 @@ pub struct SynthParams {
     pub pitch_scale: f64,
     pub intonation_scale: f64,
     pub volume_scale: f64,
+    /// Overrides the engine's default reference audio path (Voiceger only).
+    pub aux_ref_audio: Option<String>,
 }
 
 impl SynthParams {
@@ -31,6 +33,7 @@ impl SynthParams {
             pitch_scale: config.synth_params.pitch_scale,
             intonation_scale: config.synth_params.intonation_scale,
             volume_scale: config.synth_params.volume_scale,
+            aux_ref_audio: None,
         }
     }
 }

@@ -3,6 +3,211 @@ use crate::config::{AppConfig, TtsEngineType};
 use crate::tts::voiceger::VOICEGER_LANGUAGES;
 use crate::validation;
 
+/// Render the preset list + editor for one engine group.
+/// Call this from inside a `ui.collapsing(...)` closure.
+fn show_preset_section(ui: &mut egui::Ui, state: &mut AppState, engine_group: &TtsEngineType) {
+    let editing_this = (state.preset_adding || state.preset_edit_idx.is_some())
+        && state
+            .preset_edit_buf
+            .as_ref()
+            .map(|b| &b.engine == engine_group)
+            .unwrap_or(false);
+
+    let mut save_clicked = false;
+    let mut cancel_clicked = false;
+
+    if editing_this {
+        let speakers_snapshot = state.speakers.clone();
+        if let Some(buf) = state.preset_edit_buf.as_mut() {
+            ui.horizontal(|ui| {
+                ui.label("名前:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut buf.name)
+                        .desired_width(ui.available_width()),
+                );
+            });
+            ui.add_space(4.0);
+
+            let combo_id = match engine_group {
+                TtsEngineType::Voicevox => "preset_edit_speaker_vox",
+                TtsEngineType::Voiceger => "preset_edit_speaker_vgr",
+            };
+            let speaker_text = speakers_snapshot
+                .iter()
+                .flat_map(|s| s.styles.iter().map(move |st| (s, st)))
+                .find(|(_, st)| st.id == buf.speaker_id)
+                .map(|(s, st)| format!("{} - {}", s.name, st.name))
+                .unwrap_or_else(|| format!("Speaker ID: {}", buf.speaker_id));
+
+            ui.horizontal(|ui| {
+                ui.label("スピーカー:");
+                egui::ComboBox::from_id_salt(combo_id)
+                    .selected_text(&speaker_text)
+                    .show_ui(ui, |ui| {
+                        for speaker in &speakers_snapshot {
+                            for style in &speaker.styles {
+                                let label = format!("{} - {}", speaker.name, style.name);
+                                ui.selectable_value(&mut buf.speaker_id, style.id, &label);
+                            }
+                        }
+                    });
+            });
+            ui.add_space(4.0);
+
+            // Emotion selector (Voiceger only)
+            if engine_group == &TtsEngineType::Voiceger {
+                ui.horizontal(|ui| {
+                    ui.label("感情:");
+                    let emotion_label = if buf.voiceger_emotion.is_empty() {
+                        "ノーマル"
+                    } else {
+                        buf.voiceger_emotion.as_str()
+                    };
+                    egui::ComboBox::from_id_salt("preset_edit_emotion_vgr")
+                        .selected_text(emotion_label)
+                        .show_ui(ui, |ui| {
+                            for (name, _) in crate::tts::voiceger::VOICEGER_EMOTIONS {
+                                ui.selectable_value(
+                                    &mut buf.voiceger_emotion,
+                                    name.to_string(),
+                                    *name,
+                                );
+                            }
+                        });
+                });
+                ui.add_space(4.0);
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("速度:");
+                ui.add(egui::Slider::new(&mut buf.synth_params.speed_scale, 0.5..=2.0).step_by(0.05));
+            });
+            ui.horizontal(|ui| {
+                ui.label("ピッチ:");
+                ui.add(egui::Slider::new(&mut buf.synth_params.pitch_scale, -0.15..=0.15).step_by(0.01));
+            });
+            ui.horizontal(|ui| {
+                ui.label("抑揚:");
+                ui.add(egui::Slider::new(&mut buf.synth_params.intonation_scale, 0.0..=2.0).step_by(0.05));
+            });
+            ui.horizontal(|ui| {
+                ui.label("音量:");
+                ui.add(egui::Slider::new(&mut buf.synth_params.volume_scale, 0.0..=2.0).step_by(0.05));
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                save_clicked = ui.button("保存").clicked();
+                cancel_clicked = ui.button("キャンセル").clicked();
+            });
+        }
+        ui.separator();
+    }
+
+    if save_clicked {
+        if let Some(preset) = state.preset_edit_buf.take() {
+            if !preset.name.trim().is_empty() {
+                if state.preset_adding {
+                    state.config.presets.push(preset);
+                } else if let Some(idx) = state.preset_edit_idx {
+                    if idx < state.config.presets.len() {
+                        state.config.presets[idx] = preset;
+                    }
+                }
+                let _ = state.config.save();
+            }
+        }
+        state.preset_adding = false;
+        state.preset_edit_idx = None;
+    }
+    if cancel_clicked {
+        state.preset_adding = false;
+        state.preset_edit_idx = None;
+        state.preset_edit_buf = None;
+    }
+
+    // --- Preset list ---
+    let mut to_edit: Option<usize> = None;
+    let mut to_delete: Option<usize> = None;
+
+    let group_indices: Vec<usize> = (0..state.config.presets.len())
+        .filter(|&i| &state.config.presets[i].engine == engine_group)
+        .collect();
+
+    for i in group_indices {
+        let preset = &state.config.presets[i];
+        ui.horizontal(|ui| {
+            let active = state.active_preset_idx == Some(i);
+            if active {
+                ui.label(egui::RichText::new("▶").color(
+                    state.config.theme.color(state.config.theme.status_ok),
+                ));
+            } else {
+                ui.label("　");
+            }
+            ui.label(&preset.name);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("削除").clicked() {
+                    to_delete = Some(i);
+                }
+                if ui.small_button("編集").clicked() {
+                    to_edit = Some(i);
+                }
+            });
+        });
+    }
+
+    if let Some(i) = to_edit {
+        if state.preset_edit_idx != Some(i) {
+            state.preset_edit_idx = Some(i);
+            state.preset_adding = false;
+            state.preset_edit_buf = Some(state.config.presets[i].clone());
+        }
+    }
+    if let Some(i) = to_delete {
+        state.config.presets.remove(i);
+        if state.active_preset_idx == Some(i) {
+            state.active_preset_idx = None;
+        } else if let Some(idx) = state.active_preset_idx {
+            if idx > i {
+                state.active_preset_idx = Some(idx - 1);
+            }
+        }
+        if state.preset_edit_idx == Some(i) {
+            state.preset_edit_idx = None;
+            state.preset_edit_buf = None;
+        }
+        let _ = state.config.save();
+    }
+
+    ui.add_space(4.0);
+    if !editing_this && !state.preset_adding && state.preset_edit_idx.is_none() {
+        ui.horizontal(|ui| {
+            if ui.button("＋ 新規作成").clicked() {
+                state.preset_adding = true;
+                state.preset_edit_idx = None;
+                let default_speaker_id = match engine_group {
+                    TtsEngineType::Voicevox => state.config.speaker_id,
+                    TtsEngineType::Voiceger => 0,
+                };
+                state.preset_edit_buf = Some(crate::config::SpeakerPreset {
+                    name: String::new(),
+                    speaker_id: default_speaker_id,
+                    synth_params: state.config.synth_params.clone(),
+                    engine: engine_group.clone(),
+                    voiceger_emotion: String::new(),
+                });
+            }
+            if engine_group == &TtsEngineType::Voicevox {
+                if ui.button("デフォルトに戻す").clicked() {
+                    state.config.presets = crate::config::AppConfig::default_presets();
+                    state.active_preset_idx = None;
+                    let _ = state.config.save();
+                }
+            }
+        });
+    }
+}
+
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.heading("設定");
@@ -249,82 +454,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
-        // Voiceger connection
-        ui.collapsing("Voiceger接続", |ui| {
-            ui.horizontal(|ui| {
-                ui.label("URL:");
-                ui.text_edit_singleline(&mut state.config.voiceger_url);
-            });
-            ui.horizontal(|ui| {
-                ui.label("起動コマンド:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.config.voiceger_path)
-                        .hint_text("空欄 = ~/voiceger_v2 のデフォルトコマンドを使用"),
-                );
-                if ui.button("参照").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        state.config.voiceger_path = path.to_string_lossy().to_string();
-                        let _ = state.config.save();
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui.button("Voiceger起動").clicked() {
-                    state.pending_launch_voiceger = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("参照音声:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.config.voiceger_ref_audio)
-                        .hint_text("参照WAVのパス"),
-                );
-                if ui.button("参照").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("WAV", &["wav"])
-                        .pick_file()
-                    {
-                        state.config.voiceger_ref_audio = path.to_string_lossy().to_string();
-                        let _ = state.config.save();
-                    }
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("参照言語:");
-                egui::ComboBox::from_id_salt("voiceger_prompt_lang")
-                    .selected_text(&state.config.voiceger_prompt_lang)
-                    .show_ui(ui, |ui| {
-                        for (code, name, _) in VOICEGER_LANGUAGES {
-                            ui.selectable_value(
-                                &mut state.config.voiceger_prompt_lang,
-                                code.to_string(),
-                                *name,
-                            );
-                        }
-                    });
-            });
-            if !state.config.voiceger_prompt_text.is_empty() {
-                ui.label(
-                    egui::RichText::new(format!("参照テキスト: {}", &state.config.voiceger_prompt_text))
-                        .small()
-                        .weak(),
-                );
-            }
-            ui.add_space(4.0);
-            if ui.button("デフォルトに戻す").clicked() {
-                state.config.reset_voiceger_defaults();
-                let _ = state.config.save();
-            }
-            ui.label(
-                egui::RichText::new("  参照音声は {voicegerのフォルダ}/reference/ 以下にあります")
-                    .small()
-                    .weak(),
-            );
-        });
-
-        ui.add_space(8.0);
-
         // Voice parameters
         ui.collapsing("音声パラメータ", |ui| {
             let params = &mut state.config.synth_params;
@@ -351,182 +480,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
-        // Speaker presets — one collapsing section per engine
-        for engine_group in [TtsEngineType::Voicevox, TtsEngineType::Voiceger] {
-            let section_label = match engine_group {
-                TtsEngineType::Voicevox => "VOICEVOXプリセット",
-                TtsEngineType::Voiceger => "Voicegerプリセット",
-            };
-
-            let editing_this = (state.preset_adding || state.preset_edit_idx.is_some())
-                && state.preset_edit_buf.as_ref().map(|b| b.engine == engine_group).unwrap_or(false);
-
-            ui.collapsing(section_label, |ui| {
-                // --- Edit / New form (only for this engine's section) ---
-                let mut save_clicked = false;
-                let mut cancel_clicked = false;
-
-                if editing_this {
-                    let speakers_snapshot = state.speakers.clone();
-                    if let Some(buf) = state.preset_edit_buf.as_mut() {
-                        ui.horizontal(|ui| {
-                            ui.label("名前:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut buf.name)
-                                    .desired_width(ui.available_width()),
-                            );
-                        });
-                        ui.add_space(4.0);
-
-                        let combo_id = match engine_group {
-                            TtsEngineType::Voicevox => "preset_edit_speaker_vox",
-                            TtsEngineType::Voiceger => "preset_edit_speaker_vgr",
-                        };
-                        let speaker_text = speakers_snapshot
-                            .iter()
-                            .flat_map(|s| s.styles.iter().map(move |st| (s, st)))
-                            .find(|(_, st)| st.id == buf.speaker_id)
-                            .map(|(s, st)| format!("{} - {}", s.name, st.name))
-                            .unwrap_or_else(|| format!("Speaker ID: {}", buf.speaker_id));
-
-                        ui.horizontal(|ui| {
-                            ui.label("スピーカー:");
-                            egui::ComboBox::from_id_salt(combo_id)
-                                .selected_text(&speaker_text)
-                                .show_ui(ui, |ui| {
-                                    for speaker in &speakers_snapshot {
-                                        for style in &speaker.styles {
-                                            let label = format!("{} - {}", speaker.name, style.name);
-                                            ui.selectable_value(&mut buf.speaker_id, style.id, &label);
-                                        }
-                                    }
-                                });
-                        });
-                        ui.add_space(4.0);
-
-                        ui.horizontal(|ui| {
-                            ui.label("速度:");
-                            ui.add(egui::Slider::new(&mut buf.synth_params.speed_scale, 0.5..=2.0).step_by(0.05));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("ピッチ:");
-                            ui.add(egui::Slider::new(&mut buf.synth_params.pitch_scale, -0.15..=0.15).step_by(0.01));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("抑揚:");
-                            ui.add(egui::Slider::new(&mut buf.synth_params.intonation_scale, 0.0..=2.0).step_by(0.05));
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("音量:");
-                            ui.add(egui::Slider::new(&mut buf.synth_params.volume_scale, 0.0..=2.0).step_by(0.05));
-                        });
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            save_clicked = ui.button("保存").clicked();
-                            cancel_clicked = ui.button("キャンセル").clicked();
-                        });
-                    }
-                    ui.separator();
-                }
-
-                if save_clicked {
-                    if let Some(preset) = state.preset_edit_buf.take() {
-                        if !preset.name.trim().is_empty() {
-                            if state.preset_adding {
-                                state.config.presets.push(preset);
-                            } else if let Some(idx) = state.preset_edit_idx {
-                                if idx < state.config.presets.len() {
-                                    state.config.presets[idx] = preset;
-                                }
-                            }
-                            let _ = state.config.save();
-                        }
-                    }
-                    state.preset_adding = false;
-                    state.preset_edit_idx = None;
-                }
-                if cancel_clicked {
-                    state.preset_adding = false;
-                    state.preset_edit_idx = None;
-                    state.preset_edit_buf = None;
-                }
-
-                // --- Preset list for this engine ---
-                let mut to_edit: Option<usize> = None;
-                let mut to_delete: Option<usize> = None;
-
-                let group_indices: Vec<usize> = (0..state.config.presets.len())
-                    .filter(|&i| state.config.presets[i].engine == engine_group)
-                    .collect();
-
-                for i in group_indices {
-                    let preset = &state.config.presets[i];
-                    ui.horizontal(|ui| {
-                        let active = state.active_preset_idx == Some(i);
-                        if active {
-                            ui.label(egui::RichText::new("▶").color(state.config.theme.color(state.config.theme.status_ok)));
-                        } else {
-                            ui.label("　");
-                        }
-                        ui.label(&preset.name);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("削除").clicked() { to_delete = Some(i); }
-                            if ui.small_button("編集").clicked() { to_edit = Some(i); }
-                        });
-                    });
-                }
-
-                if let Some(i) = to_edit {
-                    if state.preset_edit_idx != Some(i) {
-                        state.preset_edit_idx = Some(i);
-                        state.preset_adding = false;
-                        state.preset_edit_buf = Some(state.config.presets[i].clone());
-                    }
-                }
-                if let Some(i) = to_delete {
-                    state.config.presets.remove(i);
-                    if state.active_preset_idx == Some(i) {
-                        state.active_preset_idx = None;
-                    } else if let Some(idx) = state.active_preset_idx {
-                        if idx > i { state.active_preset_idx = Some(idx - 1); }
-                    }
-                    if state.preset_edit_idx == Some(i) {
-                        state.preset_edit_idx = None;
-                        state.preset_edit_buf = None;
-                    }
-                    let _ = state.config.save();
-                }
-
-                ui.add_space(4.0);
-                if !editing_this && !state.preset_adding && state.preset_edit_idx.is_none() {
-                    ui.horizontal(|ui| {
-                        if ui.button("＋ 新規作成").clicked() {
-                            state.preset_adding = true;
-                            state.preset_edit_idx = None;
-                            let default_speaker_id = match engine_group {
-                                TtsEngineType::Voicevox => state.config.speaker_id,
-                                TtsEngineType::Voiceger => 0,
-                            };
-                            state.preset_edit_buf = Some(crate::config::SpeakerPreset {
-                                name: String::new(),
-                                speaker_id: default_speaker_id,
-                                synth_params: state.config.synth_params.clone(),
-                                engine: engine_group.clone(),
-                            });
-                        }
-                        if engine_group == TtsEngineType::Voicevox {
-                            if ui.button("デフォルトに戻す").clicked() {
-                                state.config.presets = crate::config::AppConfig::default_presets();
-                                state.active_preset_idx = None;
-                                let _ = state.config.save();
-                            }
-                        }
-                    });
-                }
-            });
-
-            ui.add_space(8.0);
-        }
+        // Speaker presets
+        ui.collapsing("VOICEVOXプリセット", |ui| {
+            show_preset_section(ui, state, &TtsEngineType::Voicevox);
+        });
 
         ui.add_space(8.0);
 
@@ -591,6 +548,94 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         // ── Voiceger ─────────────────────────────────────────────────────────
         ui.collapsing("Voiceger", |ui| {
+
+        // Voiceger connection settings
+        ui.collapsing("Voiceger接続", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("URL:");
+                ui.text_edit_singleline(&mut state.config.voiceger_url);
+            });
+            ui.horizontal(|ui| {
+                ui.label("起動コマンド:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.config.voiceger_path)
+                        .hint_text("空欄 = ~/voiceger_v2 のデフォルトコマンドを使用"),
+                );
+                if ui.button("参照").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        state.config.voiceger_path = path.to_string_lossy().to_string();
+                        let _ = state.config.save();
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Voiceger起動").clicked() {
+                    state.pending_launch_voiceger = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("参照音声:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.config.voiceger_ref_audio)
+                        .hint_text("参照WAVのパス"),
+                );
+                if ui.button("参照").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("WAV", &["wav"])
+                        .pick_file()
+                    {
+                        state.config.voiceger_ref_audio = path.to_string_lossy().to_string();
+                        let _ = state.config.save();
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("参照言語:");
+                egui::ComboBox::from_id_salt("voiceger_prompt_lang")
+                    .selected_text(&state.config.voiceger_prompt_lang)
+                    .show_ui(ui, |ui| {
+                        for (code, name, _) in VOICEGER_LANGUAGES {
+                            ui.selectable_value(
+                                &mut state.config.voiceger_prompt_lang,
+                                code.to_string(),
+                                *name,
+                            );
+                        }
+                    });
+            });
+            if !state.config.voiceger_prompt_text.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "参照テキスト: {}",
+                        &state.config.voiceger_prompt_text
+                    ))
+                    .small()
+                    .weak(),
+                );
+            }
+            ui.add_space(4.0);
+            if ui.button("デフォルトに戻す").clicked() {
+                state.config.reset_voiceger_defaults();
+                let _ = state.config.save();
+            }
+            ui.label(
+                egui::RichText::new(
+                    "  参照音声は {voicegerのフォルダ}/reference/ 以下にあります",
+                )
+                .small()
+                .weak(),
+            );
+        });
+
+        ui.add_space(8.0);
+
+        // Voiceger presets (with emotion selection)
+        ui.collapsing("Voicegerプリセット", |ui| {
+            show_preset_section(ui, state, &TtsEngineType::Voiceger);
+        });
+
+        ui.add_space(8.0);
 
         // Voiceger dictionary: per-language pronunciation replacements + shared silent words
         ui.collapsing("Voiceger辞書", |ui| {

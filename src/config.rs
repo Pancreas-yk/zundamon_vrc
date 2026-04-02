@@ -89,6 +89,9 @@ pub struct SpeakerPreset {
     pub synth_params: SynthParamsConfig,
     #[serde(default)]
     pub engine: TtsEngineType,
+    /// Voiceger emotion name (e.g. "甘え"). Empty string = ノーマル (use global ref audio).
+    #[serde(default)]
+    pub voiceger_emotion: String,
 }
 
 fn default_target_lufs() -> f64 {
@@ -285,48 +288,56 @@ impl AppConfig {
                 speaker_id: 3,
                 synth_params: SynthParamsConfig::default(),
                 engine: TtsEngineType::Voicevox,
+                voiceger_emotion: String::new(),
             },
             SpeakerPreset {
                 name: "デフォルト：めたん".to_string(),
                 speaker_id: 2,
                 synth_params: SynthParamsConfig::default(),
                 engine: TtsEngineType::Voicevox,
+                voiceger_emotion: String::new(),
             },
             SpeakerPreset {
                 name: "デフォルト：つむぎ".to_string(),
                 speaker_id: 8,
                 synth_params: SynthParamsConfig::default(),
                 engine: TtsEngineType::Voicevox,
+                voiceger_emotion: String::new(),
             },
             SpeakerPreset {
                 name: "Voiceger：日本語".to_string(),
                 speaker_id: 0,
                 synth_params: SynthParamsConfig::default(),
                 engine: TtsEngineType::Voiceger,
+                voiceger_emotion: String::new(),
             },
             SpeakerPreset {
                 name: "Voiceger：English".to_string(),
                 speaker_id: 1,
                 synth_params: SynthParamsConfig::default(),
                 engine: TtsEngineType::Voiceger,
+                voiceger_emotion: String::new(),
             },
             SpeakerPreset {
                 name: "Voiceger：中文".to_string(),
                 speaker_id: 2,
                 synth_params: SynthParamsConfig::default(),
                 engine: TtsEngineType::Voiceger,
+                voiceger_emotion: String::new(),
             },
             SpeakerPreset {
                 name: "Voiceger：한국어".to_string(),
                 speaker_id: 3,
                 synth_params: SynthParamsConfig::default(),
                 engine: TtsEngineType::Voiceger,
+                voiceger_emotion: String::new(),
             },
             SpeakerPreset {
                 name: "Voiceger：粤語".to_string(),
                 speaker_id: 4,
                 synth_params: SynthParamsConfig::default(),
                 engine: TtsEngineType::Voiceger,
+                voiceger_emotion: String::new(),
             },
         ]
     }

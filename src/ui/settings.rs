@@ -1,11 +1,15 @@
 use crate::app::AppState;
-use crate::config::AppConfig;
+use crate::config::{AppConfig, TtsEngineType};
+use crate::tts::voiceger::VOICEGER_LANGUAGES;
 use crate::validation;
 
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.heading("設定");
         ui.separator();
+
+        // ── General ──────────────────────────────────────────────────────────
+        ui.collapsing("General", |ui| {
 
         // Startup settings (app + VOICEVOX combined)
         ui.collapsing("起動設定", |ui| {
@@ -28,14 +32,18 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(4.0);
 
-            // VOICEVOX auto-launch
+            // Engine auto-launch (independent per engine)
             ui.checkbox(
                 &mut state.config.auto_launch_voicevox,
                 "アプリ起動時にVOICEVOXを自動起動",
             );
+            ui.checkbox(
+                &mut state.config.auto_launch_voiceger,
+                "アプリ起動時にVoicegerを自動起動",
+            );
             ui.label(
                 egui::RichText::new(
-                    "  両方有効にすると、PC起動→アプリ→VOICEVOX が全自動になります",
+                    "  両方チェックすると同時起動します",
                 )
                 .small()
                 .weak(),
@@ -44,7 +52,151 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
-        // VOICEVOX connection
+        // Engine selector
+        ui.collapsing("TTSエンジン", |ui| {
+            ui.horizontal(|ui| {
+                let is_vox = state.config.active_engine == TtsEngineType::Voicevox;
+                if ui.radio(is_vox, "VOICEVOX").clicked() && !is_vox {
+                    state.config.active_engine = TtsEngineType::Voicevox;
+                    let _ = state.config.save();
+                }
+                let is_vgr = state.config.active_engine == TtsEngineType::Voiceger;
+                if ui.radio(is_vgr, "Voiceger").clicked() && !is_vgr {
+                    state.config.active_engine = TtsEngineType::Voiceger;
+                    let _ = state.config.save();
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let restart_label = match state.config.active_engine {
+                    TtsEngineType::Voicevox => "VOICEVOXを再起動",
+                    TtsEngineType::Voiceger => "Voicegerを再起動",
+                };
+                if ui.button(restart_label).clicked() {
+                    match state.config.active_engine {
+                        TtsEngineType::Voicevox => state.pending_restart_voicevox = true,
+                        TtsEngineType::Voiceger => state.pending_restart_voiceger = true,
+                    }
+                }
+                if state.voicevox_launching {
+                    ui.label(
+                        egui::RichText::new("起動中...")
+                            .small()
+                            .weak(),
+                    );
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
+        ui.collapsing("OSC設定", |ui| {
+            ui.checkbox(&mut state.config.osc_enabled, "OSCチャットボックスを有効化");
+            ui.label("VRChatのチャットボックスにテキストを表示します");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("送信先アドレス:");
+                ui.text_edit_singleline(&mut state.config.osc_address);
+            });
+            ui.horizontal(|ui| {
+                ui.label("ポート:");
+                let mut port_str = state.config.osc_port.to_string();
+                if ui.text_edit_singleline(&mut port_str).changed() {
+                    if let Ok(p) = port_str.parse::<u16>() {
+                        state.config.osc_port = p;
+                    }
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
+        ui.collapsing("テンプレート", |ui| {
+            ui.checkbox(
+                &mut state.config.templates_default_expanded,
+                "起動時にテンプレートを展開した状態にする",
+            );
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+            let mut to_remove = None;
+            for (i, template) in state.config.templates.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(template);
+                    if ui.button("削除").clicked() { to_remove = Some(i); }
+                });
+            }
+            if let Some(idx) = to_remove { state.config.templates.remove(idx); }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut state.new_template_text)
+                    .hint_text("新しいテンプレート...").desired_width(200.0));
+                if ui.button("追加").clicked() && !state.new_template_text.trim().is_empty() {
+                    state.config.templates.push(state.new_template_text.trim().to_string());
+                    state.new_template_text.clear();
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
+        ui.collapsing("外観", |ui| {
+            use crate::ui::theme::Theme;
+            show_color_with_opacity(ui, state, "ウィンドウ背景", "window_background", |t| &mut t.window_background);
+            show_color_with_opacity(ui, state, "タイトルバー背景", "titlebar_background", |t| &mut t.titlebar_background);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("カラー設定（#RRGGBB または #RRGGBBAA）").small());
+            ui.add_space(4.0);
+            type ColorAccessor = fn(&mut crate::ui::theme::Theme) -> &mut [u8; 4];
+            let color_fields: &[(&str, &str, ColorAccessor)] = &[
+                ("タイトルバー文字", "titlebar_text", |t| &mut t.titlebar_text),
+                ("パネル背景", "panel_background", |t| &mut t.panel_background),
+                ("メイン文字", "text_primary", |t| &mut t.text_primary),
+                ("サブ文字", "text_secondary", |t| &mut t.text_secondary),
+                ("控えめ文字", "text_muted", |t| &mut t.text_muted),
+                ("アクセント", "accent", |t| &mut t.accent),
+                ("アクセント(ホバー)", "accent_hover", |t| &mut t.accent_hover),
+                ("ボタン背景", "button_background", |t| &mut t.button_background),
+                ("入力欄背景", "input_background", |t| &mut t.input_background),
+                ("チップ背景", "chip_background", |t| &mut t.chip_background),
+                ("タブ背景(選択)", "tab_active_background", |t| &mut t.tab_active_background),
+                ("サイズ変更ハンドル背景", "resize_handle_background", |t| &mut t.resize_handle_background),
+            ];
+            for &(label, key, accessor) in color_fields {
+                let current = *accessor(&mut state.config.theme);
+                let buf = state.color_edit_buffers.entry(key.to_string()).or_insert_with(|| Theme::to_hex(current));
+                ui.horizontal(|ui| {
+                    let preview_color = state.config.theme.color(current);
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 2.0, preview_color);
+                    ui.label(format!("{}:", label));
+                    let response = ui.add(egui::TextEdit::singleline(buf).desired_width(100.0).hint_text("#RRGGBBAA"));
+                    if response.changed() {
+                        if let Some(parsed) = Theme::parse_hex(buf) {
+                            *accessor(&mut state.config.theme) = parsed;
+                            state.needs_theme_update = true;
+                        }
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            if ui.button("デフォルトに戻す").clicked() {
+                state.config.theme = Theme::default();
+                state.color_edit_buffers.clear();
+                state.needs_theme_update = true;
+            }
+        });
+
+        }); // General
+
+        ui.add_space(8.0);
+
+        // ── VOICEVOX ─────────────────────────────────────────────────────────
+        ui.collapsing("VOICEVOX", |ui| {
+
         ui.collapsing("VOICEVOX接続", |ui| {
             ui.horizontal(|ui| {
                 ui.label("URL:");
@@ -97,6 +249,82 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
+        // Voiceger connection
+        ui.collapsing("Voiceger接続", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("URL:");
+                ui.text_edit_singleline(&mut state.config.voiceger_url);
+            });
+            ui.horizontal(|ui| {
+                ui.label("起動コマンド:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.config.voiceger_path)
+                        .hint_text("空欄 = ~/voiceger_v2 のデフォルトコマンドを使用"),
+                );
+                if ui.button("参照").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        state.config.voiceger_path = path.to_string_lossy().to_string();
+                        let _ = state.config.save();
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Voiceger起動").clicked() {
+                    state.pending_launch_voiceger = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("参照音声:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.config.voiceger_ref_audio)
+                        .hint_text("参照WAVのパス"),
+                );
+                if ui.button("参照").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("WAV", &["wav"])
+                        .pick_file()
+                    {
+                        state.config.voiceger_ref_audio = path.to_string_lossy().to_string();
+                        let _ = state.config.save();
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("参照言語:");
+                egui::ComboBox::from_id_salt("voiceger_prompt_lang")
+                    .selected_text(&state.config.voiceger_prompt_lang)
+                    .show_ui(ui, |ui| {
+                        for (code, name, _) in VOICEGER_LANGUAGES {
+                            ui.selectable_value(
+                                &mut state.config.voiceger_prompt_lang,
+                                code.to_string(),
+                                *name,
+                            );
+                        }
+                    });
+            });
+            if !state.config.voiceger_prompt_text.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("参照テキスト: {}", &state.config.voiceger_prompt_text))
+                        .small()
+                        .weak(),
+                );
+            }
+            ui.add_space(4.0);
+            if ui.button("デフォルトに戻す").clicked() {
+                state.config.reset_voiceger_defaults();
+                let _ = state.config.save();
+            }
+            ui.label(
+                egui::RichText::new("  参照音声は {voicegerのフォルダ}/reference/ 以下にあります")
+                    .small()
+                    .weak(),
+            );
+        });
+
+        ui.add_space(8.0);
+
         // Voice parameters
         ui.collapsing("音声パラメータ", |ui| {
             let params = &mut state.config.synth_params;
@@ -123,192 +351,187 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
-        // Speaker presets
-        ui.collapsing("スピーカープリセット", |ui| {
-            // --- Edit / New form ---
-            let mut save_clicked = false;
-            let mut cancel_clicked = false;
+        // Speaker presets — one collapsing section per engine
+        for engine_group in [TtsEngineType::Voicevox, TtsEngineType::Voiceger] {
+            let section_label = match engine_group {
+                TtsEngineType::Voicevox => "VOICEVOXプリセット",
+                TtsEngineType::Voiceger => "Voicegerプリセット",
+            };
 
-            if state.preset_adding || state.preset_edit_idx.is_some() {
-                let speakers_snapshot = state.speakers.clone();
-                if let Some(buf) = state.preset_edit_buf.as_mut() {
-                    ui.horizontal(|ui| {
-                        ui.label("名前:");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut buf.name)
-                                .desired_width(ui.available_width()),
-                        );
-                    });
-                    ui.add_space(4.0);
+            let editing_this = (state.preset_adding || state.preset_edit_idx.is_some())
+                && state.preset_edit_buf.as_ref().map(|b| b.engine == engine_group).unwrap_or(false);
 
-                    let speaker_text = speakers_snapshot
-                        .iter()
-                        .flat_map(|s| s.styles.iter().map(move |st| (s, st)))
-                        .find(|(_, st)| st.id == buf.speaker_id)
-                        .map(|(s, st)| format!("{} - {}", s.name, st.name))
-                        .unwrap_or_else(|| format!("Speaker ID: {}", buf.speaker_id));
+            ui.collapsing(section_label, |ui| {
+                // --- Edit / New form (only for this engine's section) ---
+                let mut save_clicked = false;
+                let mut cancel_clicked = false;
 
-                    ui.horizontal(|ui| {
-                        ui.label("スピーカー:");
-                        egui::ComboBox::from_id_salt("preset_edit_speaker")
-                            .selected_text(&speaker_text)
-                            .show_ui(ui, |ui| {
-                                for speaker in &speakers_snapshot {
-                                    for style in &speaker.styles {
-                                        let label =
-                                            format!("{} - {}", speaker.name, style.name);
-                                        ui.selectable_value(
-                                            &mut buf.speaker_id,
-                                            style.id,
-                                            &label,
-                                        );
+                if editing_this {
+                    let speakers_snapshot = state.speakers.clone();
+                    if let Some(buf) = state.preset_edit_buf.as_mut() {
+                        ui.horizontal(|ui| {
+                            ui.label("名前:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut buf.name)
+                                    .desired_width(ui.available_width()),
+                            );
+                        });
+                        ui.add_space(4.0);
+
+                        let combo_id = match engine_group {
+                            TtsEngineType::Voicevox => "preset_edit_speaker_vox",
+                            TtsEngineType::Voiceger => "preset_edit_speaker_vgr",
+                        };
+                        let speaker_text = speakers_snapshot
+                            .iter()
+                            .flat_map(|s| s.styles.iter().map(move |st| (s, st)))
+                            .find(|(_, st)| st.id == buf.speaker_id)
+                            .map(|(s, st)| format!("{} - {}", s.name, st.name))
+                            .unwrap_or_else(|| format!("Speaker ID: {}", buf.speaker_id));
+
+                        ui.horizontal(|ui| {
+                            ui.label("スピーカー:");
+                            egui::ComboBox::from_id_salt(combo_id)
+                                .selected_text(&speaker_text)
+                                .show_ui(ui, |ui| {
+                                    for speaker in &speakers_snapshot {
+                                        for style in &speaker.styles {
+                                            let label = format!("{} - {}", speaker.name, style.name);
+                                            ui.selectable_value(&mut buf.speaker_id, style.id, &label);
+                                        }
                                     }
+                                });
+                        });
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("速度:");
+                            ui.add(egui::Slider::new(&mut buf.synth_params.speed_scale, 0.5..=2.0).step_by(0.05));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("ピッチ:");
+                            ui.add(egui::Slider::new(&mut buf.synth_params.pitch_scale, -0.15..=0.15).step_by(0.01));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("抑揚:");
+                            ui.add(egui::Slider::new(&mut buf.synth_params.intonation_scale, 0.0..=2.0).step_by(0.05));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("音量:");
+                            ui.add(egui::Slider::new(&mut buf.synth_params.volume_scale, 0.0..=2.0).step_by(0.05));
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            save_clicked = ui.button("保存").clicked();
+                            cancel_clicked = ui.button("キャンセル").clicked();
+                        });
+                    }
+                    ui.separator();
+                }
+
+                if save_clicked {
+                    if let Some(preset) = state.preset_edit_buf.take() {
+                        if !preset.name.trim().is_empty() {
+                            if state.preset_adding {
+                                state.config.presets.push(preset);
+                            } else if let Some(idx) = state.preset_edit_idx {
+                                if idx < state.config.presets.len() {
+                                    state.config.presets[idx] = preset;
                                 }
-                            });
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("速度:");
-                        ui.add(
-                            egui::Slider::new(&mut buf.synth_params.speed_scale, 0.5..=2.0)
-                                .step_by(0.05),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("ピッチ:");
-                        ui.add(
-                            egui::Slider::new(
-                                &mut buf.synth_params.pitch_scale,
-                                -0.15..=0.15,
-                            )
-                            .step_by(0.01),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("抑揚:");
-                        ui.add(
-                            egui::Slider::new(
-                                &mut buf.synth_params.intonation_scale,
-                                0.0..=2.0,
-                            )
-                            .step_by(0.05),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("音量:");
-                        ui.add(
-                            egui::Slider::new(&mut buf.synth_params.volume_scale, 0.0..=2.0)
-                                .step_by(0.05),
-                        );
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        save_clicked = ui.button("保存").clicked();
-                        cancel_clicked = ui.button("キャンセル").clicked();
-                    });
-                }
-                ui.separator();
-            }
-
-            if save_clicked {
-                if let Some(preset) = state.preset_edit_buf.take() {
-                    if !preset.name.trim().is_empty() {
-                        if state.preset_adding {
-                            state.config.presets.push(preset);
-                        } else if let Some(idx) = state.preset_edit_idx {
-                            if idx < state.config.presets.len() {
-                                state.config.presets[idx] = preset;
                             }
+                            let _ = state.config.save();
                         }
-                        let _ = state.config.save();
                     }
-                }
-                state.preset_adding = false;
-                state.preset_edit_idx = None;
-            }
-            if cancel_clicked {
-                state.preset_adding = false;
-                state.preset_edit_idx = None;
-                state.preset_edit_buf = None;
-            }
-
-            // --- Preset list ---
-            let mut to_edit: Option<usize> = None;
-            let mut to_delete: Option<usize> = None;
-
-            for i in 0..state.config.presets.len() {
-                let preset = &state.config.presets[i];
-                ui.horizontal(|ui| {
-                    let active = state.active_preset_idx == Some(i);
-                    if active {
-                        ui.label(
-                            egui::RichText::new("▶")
-                                .color(state.config.theme.color(state.config.theme.status_ok)),
-                        );
-                    } else {
-                        ui.label("　");
-                    }
-                    ui.label(&preset.name);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("削除").clicked() {
-                            to_delete = Some(i);
-                        }
-                        if ui.small_button("編集").clicked() {
-                            to_edit = Some(i);
-                        }
-                    });
-                });
-            }
-
-            if let Some(i) = to_edit {
-                if state.preset_edit_idx != Some(i) {
-                    state.preset_edit_idx = Some(i);
                     state.preset_adding = false;
-                    state.preset_edit_buf = Some(state.config.presets[i].clone());
+                    state.preset_edit_idx = None;
                 }
-            }
-            if let Some(i) = to_delete {
-                state.config.presets.remove(i);
-                if state.active_preset_idx == Some(i) {
-                    state.active_preset_idx = None;
-                } else if let Some(idx) = state.active_preset_idx {
-                    if idx > i {
-                        state.active_preset_idx = Some(idx - 1);
-                    }
-                }
-                if state.preset_edit_idx == Some(i) {
+                if cancel_clicked {
+                    state.preset_adding = false;
                     state.preset_edit_idx = None;
                     state.preset_edit_buf = None;
                 }
-                let _ = state.config.save();
-            }
 
-            ui.add_space(4.0);
-            if !state.preset_adding && state.preset_edit_idx.is_none() {
-                ui.horizontal(|ui| {
-                if ui.button("＋ 新規作成").clicked() {
-                    state.preset_adding = true;
-                    state.preset_edit_idx = None;
-                    state.preset_edit_buf = Some(crate::config::SpeakerPreset {
-                        name: String::new(),
-                        speaker_id: state.config.speaker_id,
-                        synth_params: state.config.synth_params.clone(),
+                // --- Preset list for this engine ---
+                let mut to_edit: Option<usize> = None;
+                let mut to_delete: Option<usize> = None;
+
+                let group_indices: Vec<usize> = (0..state.config.presets.len())
+                    .filter(|&i| state.config.presets[i].engine == engine_group)
+                    .collect();
+
+                for i in group_indices {
+                    let preset = &state.config.presets[i];
+                    ui.horizontal(|ui| {
+                        let active = state.active_preset_idx == Some(i);
+                        if active {
+                            ui.label(egui::RichText::new("▶").color(state.config.theme.color(state.config.theme.status_ok)));
+                        } else {
+                            ui.label("　");
+                        }
+                        ui.label(&preset.name);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("削除").clicked() { to_delete = Some(i); }
+                            if ui.small_button("編集").clicked() { to_edit = Some(i); }
+                        });
                     });
                 }
-                if ui.button("デフォルトに戻す").clicked() {
-                    state.config.presets = crate::config::AppConfig::default_presets();
-                    state.active_preset_idx = None;
+
+                if let Some(i) = to_edit {
+                    if state.preset_edit_idx != Some(i) {
+                        state.preset_edit_idx = Some(i);
+                        state.preset_adding = false;
+                        state.preset_edit_buf = Some(state.config.presets[i].clone());
+                    }
+                }
+                if let Some(i) = to_delete {
+                    state.config.presets.remove(i);
+                    if state.active_preset_idx == Some(i) {
+                        state.active_preset_idx = None;
+                    } else if let Some(idx) = state.active_preset_idx {
+                        if idx > i { state.active_preset_idx = Some(idx - 1); }
+                    }
+                    if state.preset_edit_idx == Some(i) {
+                        state.preset_edit_idx = None;
+                        state.preset_edit_buf = None;
+                    }
                     let _ = state.config.save();
                 }
-                });
-            }
-        });
+
+                ui.add_space(4.0);
+                if !editing_this && !state.preset_adding && state.preset_edit_idx.is_none() {
+                    ui.horizontal(|ui| {
+                        if ui.button("＋ 新規作成").clicked() {
+                            state.preset_adding = true;
+                            state.preset_edit_idx = None;
+                            let default_speaker_id = match engine_group {
+                                TtsEngineType::Voicevox => state.config.speaker_id,
+                                TtsEngineType::Voiceger => 0,
+                            };
+                            state.preset_edit_buf = Some(crate::config::SpeakerPreset {
+                                name: String::new(),
+                                speaker_id: default_speaker_id,
+                                synth_params: state.config.synth_params.clone(),
+                                engine: engine_group.clone(),
+                            });
+                        }
+                        if engine_group == TtsEngineType::Voicevox {
+                            if ui.button("デフォルトに戻す").clicked() {
+                                state.config.presets = crate::config::AppConfig::default_presets();
+                                state.active_preset_idx = None;
+                                let _ = state.config.save();
+                            }
+                        }
+                    });
+                }
+            });
+
+            ui.add_space(8.0);
+        }
 
         ui.add_space(8.0);
 
-        ui.collapsing("ユーザー辞書", |ui| {
+        // VOICEVOX dictionary
+        ui.collapsing("VOICEVOX辞書", |ui| {
             if state.voicevox_connected {
                 ui.horizontal(|ui| {
                     if ui.button("辞書を読み込む").clicked() {
@@ -322,7 +545,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 });
                 ui.add_space(4.0);
 
-                // VOICEVOX dictionary entries
                 let mut to_delete = None;
                 for (uuid, surface, pronunciation) in &state.user_dict {
                     ui.horizontal(|ui| {
@@ -336,35 +558,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                     state.pending_delete_dict_word = Some(uuid);
                 }
 
-                // Silent word entries (local)
-                let mut silent_to_delete = None;
-                for (i, word) in state.config.silent_words.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{} → {{silent}}", word));
-                        if ui.small_button("削除").clicked() {
-                            silent_to_delete = Some(i);
-                        }
-                    });
-                }
-                if let Some(idx) = silent_to_delete {
-                    state.config.silent_words.remove(idx);
-                    let _ = state.config.save();
-                }
-
                 ui.add_space(4.0);
                 ui.separator();
 
                 ui.horizontal(|ui| {
                     ui.label("表記:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.new_dict_surface)
-                            .desired_width(100.0),
-                    );
+                    ui.add(egui::TextEdit::singleline(&mut state.new_dict_surface).desired_width(100.0));
                     ui.label("読み:");
                     ui.add(
                         egui::TextEdit::singleline(&mut state.new_dict_pronunciation)
-                            .desired_width(100.0)
-                            .hint_text("{silent}で無音化"),
+                            .desired_width(100.0),
                     );
                     if ui.button("追加").clicked()
                         && !state.new_dict_surface.trim().is_empty()
@@ -372,15 +575,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                     {
                         let surface = state.new_dict_surface.trim().to_string();
                         let pronunciation = state.new_dict_pronunciation.trim().to_string();
-                        if pronunciation == "{silent}" {
-                            // Store locally as a silent word
-                            if !state.config.silent_words.contains(&surface) {
-                                state.config.silent_words.push(surface);
-                                let _ = state.config.save();
-                            }
-                        } else {
-                            state.pending_add_dict_word = Some((surface, pronunciation));
-                        }
+                        state.pending_add_dict_word = Some((surface, pronunciation));
                         state.new_dict_surface.clear();
                         state.new_dict_pronunciation.clear();
                     }
@@ -390,7 +585,119 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
 
+        }); // VOICEVOX
+
         ui.add_space(8.0);
+
+        // ── Voiceger ─────────────────────────────────────────────────────────
+        ui.collapsing("Voiceger", |ui| {
+
+        // Voiceger dictionary: per-language pronunciation replacements + shared silent words
+        ui.collapsing("Voiceger辞書", |ui| {
+            ui.label(
+                egui::RichText::new("送信前にテキストを置換します（言語ごとに独立）")
+                    .small()
+                    .weak(),
+            );
+            ui.add_space(4.0);
+
+            // Language selector tabs
+            ui.horizontal(|ui| {
+                for (code, name, _) in crate::tts::voiceger::VOICEGER_LANGUAGES {
+                    let selected = state.voiceger_dict_lang == *code;
+                    if ui.selectable_label(selected, *name).clicked() {
+                        state.voiceger_dict_lang = code.to_string();
+                    }
+                }
+            });
+            ui.separator();
+
+            let lang = state.voiceger_dict_lang.clone();
+
+            // Entries for selected language
+            let mut to_delete_key: Option<String> = None;
+            if let Some(lang_dict) = state.config.voiceger_dict.get(&lang) {
+                let mut sorted: Vec<(String, String)> = lang_dict.iter().map(|(k,v)|(k.clone(),v.clone())).collect();
+                sorted.sort_by(|a,b| a.0.cmp(&b.0));
+                for (surface, reading) in &sorted {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} → {}", surface, reading));
+                        if ui.small_button("削除").clicked() {
+                            to_delete_key = Some(surface.clone());
+                        }
+                    });
+                }
+            }
+            if let Some(key) = to_delete_key {
+                if let Some(d) = state.config.voiceger_dict.get_mut(&lang) {
+                    d.remove(&key);
+                }
+                let _ = state.config.save();
+            }
+
+            // Silent words (shared across engines)
+            if !state.config.silent_words.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("無音化（両エンジン共通）")
+                        .size(9.0)
+                        .color(state.config.theme.color(state.config.theme.text_muted)),
+                );
+                let mut silent_to_delete = None;
+                for (i, word) in state.config.silent_words.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} → (無音)", word));
+                        if ui.small_button("削除").clicked() { silent_to_delete = Some(i); }
+                    });
+                }
+                if let Some(idx) = silent_to_delete {
+                    state.config.silent_words.remove(idx);
+                    let _ = state.config.save();
+                }
+            }
+
+            ui.add_space(4.0);
+            ui.separator();
+
+            // Add new entry
+            ui.horizontal(|ui| {
+                ui.label("表記:");
+                ui.add(egui::TextEdit::singleline(&mut state.new_dict_surface).desired_width(90.0));
+                ui.label("読み:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.new_dict_pronunciation)
+                        .desired_width(90.0)
+                        .hint_text("{silent}で無音化"),
+                );
+                if ui.button("追加").clicked()
+                    && !state.new_dict_surface.trim().is_empty()
+                    && !state.new_dict_pronunciation.trim().is_empty()
+                {
+                    let surface = state.new_dict_surface.trim().to_string();
+                    let reading = state.new_dict_pronunciation.trim().to_string();
+                    if reading == "{silent}" {
+                        if !state.config.silent_words.contains(&surface) {
+                            state.config.silent_words.push(surface);
+                        }
+                    } else {
+                        state.config.voiceger_dict
+                            .entry(lang.clone())
+                            .or_default()
+                            .insert(surface, reading);
+                    }
+                    let _ = state.config.save();
+                    state.new_dict_surface.clear();
+                    state.new_dict_pronunciation.clear();
+                }
+            });
+        });
+
+        }); // Voiceger
+
+        ui.add_space(8.0);
+
+        // ── Audio ─────────────────────────────────────────────────────────────
+        ui.collapsing("Audio", |ui| {
 
         // Audio monitoring
         ui.collapsing("オーディオ", |ui| {
@@ -483,27 +790,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
         ui.add_space(8.0);
 
-        ui.collapsing("OSC設定", |ui| {
-            ui.checkbox(&mut state.config.osc_enabled, "OSCチャットボックスを有効化");
-            ui.label("VRChatのチャットボックスにテキストを表示します");
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("送信先アドレス:");
-                ui.text_edit_singleline(&mut state.config.osc_address);
-            });
-            ui.horizontal(|ui| {
-                ui.label("ポート:");
-                let mut port_str = state.config.osc_port.to_string();
-                if ui.text_edit_singleline(&mut port_str).changed() {
-                    if let Ok(p) = port_str.parse::<u16>() {
-                        state.config.osc_port = p;
-                    }
-                }
-            });
-        });
-
-        ui.add_space(8.0);
-
         ui.collapsing("音声エフェクト", |ui| {
             ui.checkbox(&mut state.config.echo_enabled, "エコーを有効化");
             ui.add_space(4.0);
@@ -559,13 +845,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         ui.collapsing("サウンドボード", |ui| {
             ui.horizontal(|ui| {
                 ui.label("フォルダパス:");
-                ui.text_edit_singleline(&mut state.config.soundboard_path);
                 if ui.button("参照").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                         state.config.soundboard_path = path.to_string_lossy().to_string();
                         state.pending_soundboard_scan = true;
                     }
                 }
+                ui.add(egui::TextEdit::singleline(&mut state.config.soundboard_path)
+                    .desired_width(f32::INFINITY));
             });
 
             ui.add_space(8.0);
@@ -604,142 +891,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
 
-        ui.add_space(8.0);
-
-        // Templates
-        ui.collapsing("テンプレート", |ui| {
-            ui.checkbox(
-                &mut state.config.templates_default_expanded,
-                "起動時にテンプレートを展開した状態にする",
-            );
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-
-            let mut to_remove = None;
-            for (i, template) in state.config.templates.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(template);
-                    if ui.button("削除").clicked() {
-                        to_remove = Some(i);
-                    }
-                });
-            }
-            if let Some(idx) = to_remove {
-                state.config.templates.remove(idx);
-            }
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let te = egui::TextEdit::singleline(&mut state.new_template_text)
-                    .hint_text("新しいテンプレート...")
-                    .desired_width(200.0);
-                ui.add(te);
-                if ui.button("追加").clicked() && !state.new_template_text.trim().is_empty() {
-                    state
-                        .config
-                        .templates
-                        .push(state.new_template_text.trim().to_string());
-                    state.new_template_text.clear();
-                }
-            });
-        });
-
-        ui.add_space(8.0);
-
-        // Appearance
-        ui.collapsing("外観", |ui| {
-            use crate::ui::theme::Theme;
-
-            // Window background: color + transparency side by side
-            show_color_with_opacity(
-                ui,
-                state,
-                "ウィンドウ背景",
-                "window_background",
-                |t| &mut t.window_background,
-            );
-            // Titlebar background: color + transparency side by side
-            show_color_with_opacity(
-                ui,
-                state,
-                "タイトルバー背景",
-                "titlebar_background",
-                |t| &mut t.titlebar_background,
-            );
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("カラー設定（#RRGGBB または #RRGGBBAA）").small());
-            ui.add_space(4.0);
-
-            type ColorAccessor = fn(&mut crate::ui::theme::Theme) -> &mut [u8; 4];
-            let color_fields: &[(&str, &str, ColorAccessor)] = &[
-                ("タイトルバー文字", "titlebar_text", |t| {
-                    &mut t.titlebar_text
-                }),
-                ("パネル背景", "panel_background", |t| {
-                    &mut t.panel_background
-                }),
-                ("メイン文字", "text_primary", |t| &mut t.text_primary),
-                ("サブ文字", "text_secondary", |t| &mut t.text_secondary),
-                ("控えめ文字", "text_muted", |t| &mut t.text_muted),
-                ("アクセント", "accent", |t| &mut t.accent),
-                ("アクセント(ホバー)", "accent_hover", |t| {
-                    &mut t.accent_hover
-                }),
-                ("ボタン背景", "button_background", |t| {
-                    &mut t.button_background
-                }),
-                ("入力欄背景", "input_background", |t| {
-                    &mut t.input_background
-                }),
-                ("チップ背景", "chip_background", |t| {
-                    &mut t.chip_background
-                }),
-                ("タブ背景(選択)", "tab_active_background", |t| {
-                    &mut t.tab_active_background
-                }),
-            ];
-
-            for &(label, key, accessor) in color_fields {
-                let current = *accessor(&mut state.config.theme);
-                let buf = state
-                    .color_edit_buffers
-                    .entry(key.to_string())
-                    .or_insert_with(|| Theme::to_hex(current));
-
-                ui.horizontal(|ui| {
-                    // Color preview swatch
-                    let preview_color = state.config.theme.color(current);
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 2.0, preview_color);
-
-                    ui.label(format!("{}:", label));
-                    let response = ui.add(
-                        egui::TextEdit::singleline(buf)
-                            .desired_width(100.0)
-                            .hint_text("#RRGGBBAA"),
-                    );
-                    if response.changed() {
-                        if let Some(parsed) = Theme::parse_hex(buf) {
-                            *accessor(&mut state.config.theme) = parsed;
-                            state.needs_theme_update = true;
-                        }
-                    }
-                });
-            }
-
-            ui.add_space(4.0);
-            if ui.button("デフォルトに戻す").clicked() {
-                state.config.theme = Theme::default();
-                state.color_edit_buffers.clear();
-                state.needs_theme_update = true;
-            }
-        });
+        }); // Audio
 
         ui.add_space(12.0);
+
+        // Warn when no presets exist
+        let voicevox_presets = state.config.presets.iter().any(|p| p.engine == TtsEngineType::Voicevox);
+        let voiceger_presets = state.config.presets.iter().any(|p| p.engine == TtsEngineType::Voiceger);
+        if !voicevox_presets || !voiceger_presets {
+            let warn_color = state.config.theme.color(state.config.theme.status_warn);
+            if !voicevox_presets {
+                ui.colored_label(warn_color, "⚠ VOICEVOXプリセットがありません。設定で追加してください。");
+            }
+            if !voiceger_presets {
+                ui.colored_label(warn_color, "⚠ Voicegerプリセットがありません。設定で追加してください。");
+            }
+        }
 
         if ui.button("設定を保存").clicked() {
             match state.config.save() {
@@ -747,6 +914,47 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 Err(e) => state.last_error = Some(format!("保存失敗: {}", e)),
             }
         }
+
+        ui.add_space(24.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // Credits
+        ui.collapsing("Credits", |ui| {
+            let muted = state.config.theme.color(state.config.theme.text_muted);
+            let secondary = state.config.theme.color(state.config.theme.text_secondary);
+
+            ui.label(egui::RichText::new("ZunduxTTS").size(13.0).color(secondary));
+            ui.label(
+                egui::RichText::new("A Linux desktop TTS virtual microphone for VRChat.")
+                    .small()
+                    .color(muted),
+            );
+            ui.add_space(8.0);
+
+            let credits = [
+                ("VOICEVOX", "High-quality Japanese TTS engine", "https://voicevox.hiroshiba.jp/"),
+                ("Voiceger / GPT-SoVITS", "Multilingual voice synthesis", "https://github.com/zunzun999/voiceger_v2"),
+                ("egui / eframe", "Immediate-mode GUI framework", "https://github.com/emilk/egui"),
+                ("ZUNDAMON character", "© AHS Co., Ltd.", "https://zunko.jp/"),
+            ];
+
+            for (name, desc, _url) in &credits {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(*name).small().color(secondary));
+                    ui.label(egui::RichText::new(format!("— {}", desc)).small().color(muted));
+                });
+            }
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Built with Rust  •  Licensed under MIT")
+                    .small()
+                    .color(muted),
+            );
+        });
+
+        ui.add_space(8.0);
     });
 }
 

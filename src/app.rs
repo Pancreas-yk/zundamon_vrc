@@ -2,6 +2,7 @@ use crate::audio::AudioManager;
 use crate::config::AppConfig;
 use crate::tts::types::{Speaker, SynthParams};
 use crate::tts::voicevox::VoicevoxEngine;
+use crate::tts::TtsEngine;
 use crate::tts::TtsManager;
 use crate::ui::Screen;
 
@@ -27,6 +28,7 @@ enum UiMessage {
     },
     SpeakersLoaded(Vec<Speaker>),
     HealthCheckResult(bool),
+    VoicegerHealthCheckResult(bool),
     Error(String),
     UserDictLoaded(crate::tts::types::UserDict),
     UserDictUpdated,
@@ -40,9 +42,11 @@ pub enum TtsCommand {
     Synthesize {
         text: String,
         params: SynthParams,
+        engine: crate::config::TtsEngineType,
     },
     LoadSpeakers,
     HealthCheck,
+    HealthCheckVoiceger,
     LoadUserDict,
     AddUserDictWord {
         surface: String,
@@ -59,6 +63,7 @@ pub struct AppState {
     pub input_text: String,
     pub speakers: Vec<Speaker>,
     pub voicevox_connected: bool,
+    pub voiceger_connected: bool,
     pub device_ready: bool,
     pub is_synthesizing: bool,
     pub is_playing: bool,
@@ -68,6 +73,9 @@ pub struct AppState {
     pub pending_create_device: bool,
     pub pending_destroy_device: bool,
     pub pending_launch_voicevox: bool,
+    pub pending_launch_voiceger: bool,
+    pub pending_restart_voicevox: bool,
+    pub pending_restart_voiceger: bool,
     pub voicevox_launching: bool,
     pub current_screen: Screen,
     pub new_template_text: String,
@@ -108,6 +116,8 @@ pub struct AppState {
     pub preset_edit_idx: Option<usize>,
     pub preset_adding: bool,
     pub preset_edit_buf: Option<crate::config::SpeakerPreset>,
+    /// Currently selected language in the Voiceger dictionary editor.
+    pub voiceger_dict_lang: String,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundux-voicevox";
@@ -119,10 +129,12 @@ pub struct ZunduxApp {
     ui_rx: mpsc::Receiver<UiMessage>,
     tts_tx: mpsc::Sender<TtsCommand>,
     voicevox_process: Option<Child>,
+    voiceger_process: Option<Child>,
     is_docker: bool,
     last_health_check: Instant,
     pub is_playing: Arc<AtomicBool>,
     tts_cancel: Arc<AtomicBool>,
+    audio_queue: std::collections::VecDeque<Vec<u8>>,
     is_soundboard_playing: Arc<AtomicBool>,
     soundboard_pids: Arc<std::sync::Mutex<Vec<u32>>>,
     soundboard_cancel: Arc<AtomicBool>,
@@ -141,6 +153,7 @@ impl ZunduxApp {
         let (tts_tx, tts_rx) = mpsc::channel::<TtsCommand>();
 
         let auto_launch_voicevox = config.auto_launch_voicevox;
+        let auto_launch_voiceger = config.auto_launch_voiceger;
         let templates_default_expanded = config.templates_default_expanded;
         let device_name = config.virtual_device_name.clone();
         let mut audio_manager = AudioManager::new(&device_name);
@@ -152,10 +165,24 @@ impl ZunduxApp {
 
         // Spawn the TTS command processing loop on tokio
         let voicevox_url = config.voicevox_url.clone();
-        rt.spawn(Self::tts_loop(tts_manager, voicevox_url, tts_rx, ui_tx));
+        let voiceger_url = config.voiceger_url.clone();
+        let voiceger_ref_audio = config.voiceger_ref_audio.clone();
+        let voiceger_prompt_text = config.voiceger_prompt_text.clone();
+        let voiceger_prompt_lang = config.voiceger_prompt_lang.clone();
+        rt.spawn(Self::tts_loop(
+            tts_manager,
+            voicevox_url,
+            voiceger_url,
+            voiceger_ref_audio,
+            voiceger_prompt_text,
+            voiceger_prompt_lang,
+            tts_rx,
+            ui_tx,
+        ));
 
         // Trigger initial health check + speaker load
         let _ = tts_tx.send(TtsCommand::HealthCheck);
+        let _ = tts_tx.send(TtsCommand::HealthCheckVoiceger);
         let _ = tts_tx.send(TtsCommand::LoadSpeakers);
 
         Self {
@@ -164,6 +191,7 @@ impl ZunduxApp {
                 input_text: String::new(),
                 speakers: Vec::new(),
                 voicevox_connected: false,
+                voiceger_connected: false,
                 device_ready,
                 is_synthesizing: false,
                 is_playing: false,
@@ -173,6 +201,9 @@ impl ZunduxApp {
                 pending_create_device: false,
                 pending_destroy_device: false,
                 pending_launch_voicevox: auto_launch_voicevox,
+                pending_launch_voiceger: auto_launch_voiceger,
+                pending_restart_voicevox: false,
+                pending_restart_voiceger: false,
                 voicevox_launching: false,
                 current_screen: Screen::Input,
                 new_template_text: String::new(),
@@ -212,15 +243,18 @@ impl ZunduxApp {
                 preset_edit_idx: None,
                 preset_adding: false,
                 preset_edit_buf: None,
+                voiceger_dict_lang: "ja".to_string(),
             },
             audio_manager,
             ui_rx,
             tts_tx,
             voicevox_process: None,
+            voiceger_process: None,
             is_docker: false,
             last_health_check: Instant::now(),
             is_playing: Arc::new(AtomicBool::new(false)),
             tts_cancel: Arc::new(AtomicBool::new(false)),
+            audio_queue: std::collections::VecDeque::new(),
             is_soundboard_playing: Arc::new(AtomicBool::new(false)),
             soundboard_pids: Arc::new(std::sync::Mutex::new(Vec::new())),
             soundboard_cancel: Arc::new(AtomicBool::new(false)),
@@ -233,14 +267,32 @@ impl ZunduxApp {
     async fn tts_loop(
         tts: TtsManager,
         voicevox_url: String,
+        voiceger_url: String,
+        voiceger_ref_audio: String,
+        voiceger_prompt_text: String,
+        voiceger_prompt_lang: String,
         rx: mpsc::Receiver<TtsCommand>,
         tx: mpsc::Sender<UiMessage>,
     ) {
+        use crate::config::TtsEngineType;
+        use crate::tts::voiceger::VoicegerEngine;
         let dict_engine = VoicevoxEngine::new(&voicevox_url);
+        let voiceger_engine = VoicegerEngine::new(
+            &voiceger_url,
+            &voiceger_ref_audio,
+            &voiceger_prompt_text,
+            &voiceger_prompt_lang,
+        );
+        // Eagerly load Zundamon weights so they're ready before the first synthesis.
+        voiceger_engine.load_zundamon_weights().await;
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                TtsCommand::Synthesize { text, params } => {
-                    match tts.synthesize(&text, &params).await {
+                TtsCommand::Synthesize { text, params, engine } => {
+                    let result = match engine {
+                        TtsEngineType::Voicevox => tts.synthesize(&text, &params).await,
+                        TtsEngineType::Voiceger => voiceger_engine.synthesize(&text, &params).await,
+                    };
+                    match result {
                         Ok(wav) => {
                             let _ = tx.send(UiMessage::WavReady { wav, text });
                         }
@@ -257,14 +309,18 @@ impl ZunduxApp {
                         let _ = tx.send(UiMessage::Error(format!("スピーカー取得失敗: {}", e)));
                     }
                 },
-                TtsCommand::HealthCheck => match tts.health_check().await {
-                    Ok(ok) => {
-                        let _ = tx.send(UiMessage::HealthCheckResult(ok));
-                    }
-                    Err(_) => {
-                        let _ = tx.send(UiMessage::HealthCheckResult(false));
-                    }
-                },
+                TtsCommand::HealthCheck => {
+                    // Always check VOICEVOX via dict_engine (VoicevoxEngine) regardless of
+                    // which engine is active. This ensures HealthCheckResult always reflects
+                    // VOICEVOX status, not the active TTS engine.
+                    let ok = dict_engine.health_check().await.unwrap_or(false);
+                    let _ = tx.send(UiMessage::HealthCheckResult(ok));
+                }
+                TtsCommand::HealthCheckVoiceger => {
+                    // Use voiceger_engine.health_check() so weight loading is handled here too.
+                    let ok = voiceger_engine.health_check().await.unwrap_or(false);
+                    let _ = tx.send(UiMessage::VoicegerHealthCheckResult(ok));
+                }
                 TtsCommand::LoadUserDict => match dict_engine.list_user_dict().await {
                     Ok(dict) => {
                         let _ = tx.send(UiMessage::UserDictLoaded(dict));
@@ -312,6 +368,7 @@ impl ZunduxApp {
 
                     // Send OSC chatbox message before playback
                     if self.state.config.osc_enabled {
+                        tracing::info!("OSC send: {:?} → {}:{}", text, self.state.config.osc_address, self.state.config.osc_port);
                         if let Err(e) = crate::osc::send_chatbox(
                             &self.state.config.osc_address,
                             self.state.config.osc_port,
@@ -319,6 +376,8 @@ impl ZunduxApp {
                         ) {
                             tracing::warn!("OSC send failed: {}", e);
                         }
+                    } else {
+                        tracing::info!("OSC disabled, skipping chatbox for: {:?}", text);
                     }
 
                     let wav = if self.state.config.echo_enabled {
@@ -331,28 +390,7 @@ impl ZunduxApp {
                         wav
                     };
 
-                    if self.is_playing.load(Ordering::SeqCst) {
-                        tracing::warn!("Playback already in progress, dropping TTS audio");
-                    } else {
-                        // Ensure sink is unmuted before playback
-                        let _ = std::process::Command::new("pactl")
-                            .args(["set-sink-mute", &self.state.config.virtual_device_name, "0"])
-                            .output();
-                        let device_name = self.state.config.virtual_device_name.clone();
-                        let monitor = self.state.config.monitor_audio;
-                        let playing = self.is_playing.clone();
-                        let cancel = self.tts_cancel.clone();
-                        cancel.store(false, Ordering::SeqCst);
-                        playing.store(true, Ordering::SeqCst);
-                        std::thread::spawn(move || {
-                            let _guard = PlaybackGuard(playing);
-                            if let Err(e) =
-                                crate::audio::playback::play_wav(wav, &device_name, monitor, cancel)
-                            {
-                                tracing::error!("Playback error: {}", e);
-                            }
-                        });
-                    }
+                    self.audio_queue.push_back(wav);
                 }
                 UiMessage::SpeakersLoaded(speakers) => {
                     self.state.speakers = speakers;
@@ -365,6 +403,12 @@ impl ZunduxApp {
                         if was_disconnected {
                             let _ = self.tts_tx.send(TtsCommand::LoadSpeakers);
                         }
+                    }
+                }
+                UiMessage::VoicegerHealthCheckResult(ok) => {
+                    self.state.voiceger_connected = ok;
+                    if ok {
+                        self.state.voicevox_launching = false;
                     }
                 }
                 UiMessage::Error(err) => {
@@ -398,6 +442,7 @@ impl ZunduxApp {
         if self.last_health_check.elapsed().as_secs() >= interval {
             self.last_health_check = Instant::now();
             let _ = self.tts_tx.send(TtsCommand::HealthCheck);
+            let _ = self.tts_tx.send(TtsCommand::HealthCheckVoiceger);
         }
     }
 
@@ -423,10 +468,52 @@ impl ZunduxApp {
             if text.is_empty() {
                 // Nothing left to speak after stripping
             } else {
-                let params = SynthParams::from_config(&self.state.config);
+                let active_preset = self.state.active_preset_idx
+                    .and_then(|i| self.state.config.presets.get(i));
+                let engine = active_preset
+                    .map(|p| p.engine.clone())
+                    .unwrap_or(self.state.config.active_engine.clone());
+
+                // Voiceger requires a preset — language cannot be inferred without one.
+                let voiceger_no_preset = engine == crate::config::TtsEngineType::Voiceger
+                    && active_preset.map(|p| p.engine != crate::config::TtsEngineType::Voiceger).unwrap_or(true);
+                if voiceger_no_preset {
+                    self.state.last_error = Some(
+                        "Voicegerにはプリセットの選択が必要です。".to_string()
+                    );
+                    // Skip synthesis — fall through to remaining actions
+                } else {
+
+                let params = active_preset
+                    .map(|p| SynthParams {
+                        speaker_id: p.speaker_id,
+                        speed_scale: p.synth_params.speed_scale,
+                        pitch_scale: p.synth_params.pitch_scale,
+                        intonation_scale: p.synth_params.intonation_scale,
+                        volume_scale: p.synth_params.volume_scale,
+                    })
+                    .unwrap_or_else(|| SynthParams::from_config(&self.state.config));
+                // Apply Voiceger client-side pronunciation dictionary (per language)
+                let text = if engine == crate::config::TtsEngineType::Voiceger {
+                    let lang = crate::tts::voiceger::VoicegerEngine::lang_for_speaker_id(params.speaker_id);
+                    // Warn if detected language doesn't match the preset's expected language
+                    if let Some(detected) = Self::detect_text_lang(&text) {
+                        if !Self::lang_compatible(lang, detected) {
+                            self.state.last_error = Some(format!(
+                                "言語の不一致: プリセットは「{}」ですが、テキストは「{}」のようです。",
+                                Self::lang_display(lang),
+                                Self::lang_display(detected),
+                            ));
+                        }
+                    }
+                    Self::apply_voiceger_dict(&text, &self.state.config.voiceger_dict, lang)
+                } else {
+                    text
+                };
                 self.state.is_synthesizing = true;
-                self.state.last_error = None;
-                let _ = self.tts_tx.send(TtsCommand::Synthesize { text, params });
+                // Don't clear last_error here — a lang-mismatch warning may have just been set.
+                let _ = self.tts_tx.send(TtsCommand::Synthesize { text, params, engine });
+                } // end else (voiceger_no_preset)
             }
         }
 
@@ -440,6 +527,34 @@ impl ZunduxApp {
         if self.state.pending_launch_voicevox {
             self.state.pending_launch_voicevox = false;
             self.launch_voicevox();
+        }
+
+        // Handle Voiceger launch
+        if self.state.pending_launch_voiceger {
+            self.state.pending_launch_voiceger = false;
+            self.launch_voiceger();
+        }
+
+        // Handle VOICEVOX restart
+        if self.state.pending_restart_voicevox {
+            self.state.pending_restart_voicevox = false;
+            if let Some(mut proc) = self.voicevox_process.take() {
+                let _ = proc.kill();
+            }
+            self.state.voicevox_connected = false;
+            self.state.voicevox_launching = false;
+            self.launch_voicevox();
+        }
+
+        // Handle Voiceger restart
+        if self.state.pending_restart_voiceger {
+            self.state.pending_restart_voiceger = false;
+            if let Some(mut proc) = self.voiceger_process.take() {
+                let _ = proc.kill();
+            }
+            self.state.voiceger_connected = false;
+            self.state.voicevox_launching = false;
+            self.launch_voiceger();
         }
 
         // Handle device creation
@@ -736,6 +851,104 @@ impl ZunduxApp {
         result.trim().to_string()
     }
 
+    /// Heuristic language detector for Voiceger language mismatch warnings.
+    /// Returns the detected lang code, or None if the text is too short/ambiguous.
+    fn detect_text_lang(text: &str) -> Option<&'static str> {
+        let mut hiragana_katakana = 0u32;
+        let mut hangul = 0u32;
+        let mut cjk = 0u32;
+        let mut latin = 0u32;
+        let mut total = 0u32;
+
+        for c in text.chars() {
+            if c.is_whitespace() || c.is_ascii_punctuation() {
+                continue;
+            }
+            total += 1;
+            let cp = c as u32;
+            if (0x3040..=0x30FF).contains(&cp) {
+                hiragana_katakana += 1;
+            } else if (0xAC00..=0xD7AF).contains(&cp) || (0x1100..=0x11FF).contains(&cp) {
+                hangul += 1;
+            } else if (0x4E00..=0x9FFF).contains(&cp) || (0x3400..=0x4DBF).contains(&cp) {
+                cjk += 1;
+            } else if c.is_ascii_alphabetic() {
+                latin += 1;
+            }
+        }
+
+        if total < 2 {
+            return None; // too short to judge
+        }
+
+        // Hiragana/katakana is a definitive marker for Japanese
+        if hiragana_katakana > 0 {
+            return Some("ja");
+        }
+        if hangul > 0 {
+            return Some("ko");
+        }
+        // CJK without kana = Chinese or Cantonese (we can't easily distinguish)
+        if cjk * 2 > total {
+            return Some("zh");
+        }
+        // Majority Latin = English
+        if latin * 2 > total {
+            return Some("en");
+        }
+        None
+    }
+
+    /// Returns true if the detected language is compatible with the preset language.
+    /// zh and yue share CJK script so they're treated as compatible.
+    fn lang_compatible(preset_lang: &str, detected: &str) -> bool {
+        if preset_lang == detected {
+            return true;
+        }
+        // zh and yue are visually indistinguishable by simple char analysis
+        matches!((preset_lang, detected), ("zh", "yue") | ("yue", "zh") | ("zh", "zh") | ("yue", "yue"))
+    }
+
+    fn lang_display(lang: &str) -> &'static str {
+        match lang {
+            "ja" => "日本語",
+            "en" => "English",
+            "zh" => "中文",
+            "ko" => "한국어",
+            "yue" => "粤語",
+            _ => "不明",
+        }
+    }
+
+    /// Apply Voiceger client-side pronunciation dictionary for a given language (longest-match).
+    fn apply_voiceger_dict(
+        text: &str,
+        dict: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+        lang: &str,
+    ) -> String {
+        let lang_dict = match dict.get(lang) {
+            Some(d) if !d.is_empty() => d,
+            _ => return text.to_string(),
+        };
+        let mut entries: Vec<(&str, &str)> = lang_dict.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+        let mut result = String::with_capacity(text.len());
+        let chars: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let remaining: String = chars[i..].iter().collect();
+            if let Some((surface, reading)) = entries.iter().find(|(s, _)| remaining.starts_with(s)) {
+                result.push_str(reading);
+                i += surface.chars().count();
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+        result
+    }
+
     fn is_voicevox_docker_running() -> bool {
         std::process::Command::new("docker")
             .args([
@@ -846,6 +1059,78 @@ impl ZunduxApp {
             Err(e) => {
                 tracing::error!("Failed to launch VOICEVOX: {}", e);
                 self.state.last_error = Some(format!("VOICEVOX起動失敗: {}", e));
+            }
+        }
+    }
+
+    fn launch_voiceger(&mut self) {
+        let path = self.state.config.effective_voiceger_launch_cmd();
+
+        // Guard: already running
+        if let Some(ref mut proc) = self.voiceger_process {
+            match proc.try_wait() {
+                Ok(None) => {
+                    tracing::info!("Voiceger process already running");
+                    return;
+                }
+                _ => {
+                    self.voiceger_process = None;
+                }
+            }
+        }
+
+        tracing::info!("Launching Voiceger: {}", path);
+        let words = match shell_words::split(&path) {
+            Ok(w) if !w.is_empty() => w,
+            _ => {
+                self.state.last_error = Some("Voiceger起動コマンドのパースに失敗しました".to_string());
+                return;
+            }
+        };
+
+        // Run from the GPT-SoVITS directory so relative imports work
+        let workdir = self.state.config.voiceger_base_dir()
+            .map(|d| d.join("GPT-SoVITS"))
+            .filter(|d| d.exists());
+
+        // Write server output to a log file for debugging.
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/zundux_voiceger.log")
+            .ok();
+        let (stdout_io, stderr_io) = match log_file {
+            Some(f) => {
+                let f2 = f.try_clone().unwrap_or_else(|_| {
+                    std::fs::OpenOptions::new()
+                        .create(true).append(true)
+                        .open("/tmp/zundux_voiceger.log").unwrap()
+                });
+                (std::process::Stdio::from(f), std::process::Stdio::from(f2))
+            }
+            None => (std::process::Stdio::null(), std::process::Stdio::null()),
+        };
+
+        let mut cmd = Command::new(&words[0]);
+        cmd.args(&words[1..])
+            .env("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+            .stdout(stdout_io)
+            .stderr(stderr_io);
+        if let Some(dir) = workdir {
+            cmd.current_dir(dir);
+        }
+        let result = cmd.spawn();
+
+        match result {
+            Ok(child) => {
+                self.voiceger_process = Some(child);
+                self.state.last_error = None;
+                self.state.voicevox_launching = true;
+                tracing::info!("Voiceger process spawned");
+            }
+            Err(e) => {
+                tracing::error!("Failed to launch Voiceger: {}", e);
+                self.state.last_error = Some(format!("Voiceger起動失敗: {}", e));
             }
         }
     }
@@ -1003,6 +1288,30 @@ impl eframe::App for ZunduxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_messages();
         self.state.is_playing = self.is_playing.load(Ordering::SeqCst);
+
+        // Drain audio queue: start next playback when current finishes.
+        if !self.state.is_playing {
+            if let Some(wav) = self.audio_queue.pop_front() {
+                let _ = std::process::Command::new("pactl")
+                    .args(["set-sink-mute", &self.state.config.virtual_device_name, "0"])
+                    .output();
+                let device_name = self.state.config.virtual_device_name.clone();
+                let monitor = self.state.config.monitor_audio;
+                let playing = self.is_playing.clone();
+                let cancel = self.tts_cancel.clone();
+                cancel.store(false, Ordering::SeqCst);
+                playing.store(true, Ordering::SeqCst);
+                self.state.is_playing = true;
+                std::thread::spawn(move || {
+                    let _guard = PlaybackGuard(playing);
+                    if let Err(e) =
+                        crate::audio::playback::play_wav(wav, &device_name, monitor, cancel)
+                    {
+                        tracing::error!("Playback error: {}", e);
+                    }
+                });
+            }
+        }
         self.state.is_soundboard_playing = self.is_soundboard_playing.load(Ordering::SeqCst);
         self.periodic_health_check();
         self.process_actions();
@@ -1028,6 +1337,18 @@ impl eframe::App for ZunduxApp {
             theme.window_rounding
         };
         let screen_rect = ctx.screen_rect();
+
+        // Persist window size when it changes (skip while maximized)
+        if !is_maximized {
+            let (w, h) = (screen_rect.width(), screen_rect.height());
+            let saved_w = self.state.config.window_width;
+            let saved_h = self.state.config.window_height;
+            if (w - saved_w).abs() > 1.0 || (h - saved_h).abs() > 1.0 {
+                self.state.config.window_width = w;
+                self.state.config.window_height = h;
+                let _ = self.state.config.save();
+            }
+        }
         let painter = ctx.layer_painter(egui::LayerId::background());
         painter.rect_filled(
             screen_rect,
@@ -1095,12 +1416,16 @@ impl eframe::App for ZunduxApp {
             .frame(egui::Frame::NONE.fill(theme.color(theme.titlebar_background)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
+                    let engine_name = match self.state.config.active_engine {
+                        crate::config::TtsEngineType::Voicevox => "VOICEVOX",
+                        crate::config::TtsEngineType::Voiceger => "Voiceger",
+                    };
                     let (vox_color, vox_text) = if self.state.voicevox_connected {
-                        (theme.color(theme.status_ok), "VOICEVOX")
+                        (theme.color(theme.status_ok), engine_name)
                     } else if self.state.voicevox_launching {
-                        (theme.color(theme.status_warn), "VOICEVOX...")
+                        (theme.color(theme.status_warn), engine_name)
                     } else {
-                        (theme.color(theme.status_error), "VOICEVOX")
+                        (theme.color(theme.status_error), engine_name)
                     };
                     ui.colored_label(vox_color, format!("\u{25CF} {}", vox_text));
                     ui.add_space(12.0);
@@ -1125,9 +1450,25 @@ impl eframe::App for ZunduxApp {
 
                     // Resize handle at bottom-right corner
                     let available = ui.available_size();
-                    ui.add_space(available.x - 16.0);
+                    let handle_size = available.y;
+                    // Label sits outside (left of) the hit area
+                    ui.add_space(available.x - handle_size - 60.0);
+                    ui.label(
+                        egui::RichText::new("サイズ変更")
+                            .size(10.0)
+                            .color(theme.color(theme.text_muted)),
+                    );
+                    // Square hit area
                     let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::drag());
+                        ui.allocate_exact_size(egui::vec2(handle_size, handle_size), egui::Sense::drag());
+                    ui.painter()
+                        .rect_filled(rect, egui::CornerRadius::ZERO, theme.color(theme.resize_handle_background));
+                    ui.painter().rect_stroke(
+                        rect,
+                        egui::CornerRadius::ZERO,
+                        egui::Stroke::new(1.0, theme.color(theme.text_muted)),
+                        egui::epaint::StrokeKind::Inside,
+                    );
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -1135,7 +1476,9 @@ impl eframe::App for ZunduxApp {
                         egui::FontId::proportional(12.0),
                         theme.color(theme.text_muted),
                     );
-                    if response.drag_started() {
+                    if response.contains_pointer()
+                        && ui.input(|i| i.pointer.primary_pressed())
+                    {
                         ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
                             egui::ResizeDirection::SouthEast,
                         ));

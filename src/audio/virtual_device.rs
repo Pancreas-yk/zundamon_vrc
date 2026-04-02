@@ -354,8 +354,15 @@ impl VirtualDevice {
 
 impl Drop for VirtualDevice {
     fn drop(&mut self) {
-        if let Err(e) = self.destroy() {
-            tracing::error!("Error destroying virtual device: {}", e);
-        }
+        // On app exit, keep the null sink and virtual source alive in PipeWire.
+        // Leaving them loaded means VRChat retains its microphone connection and
+        // does not require a manual mic-toggle after the app is restarted.
+        // Only the loopback and LADSPA modules are transient and must be cleaned up.
+        let _ = self.disable_mic_passthrough();
+        self.unload_ladspa();
+        // Forget the module IDs so destroy() (if called explicitly) is a no-op for
+        // sink/source, and pactl unload-module is not issued for them.
+        self.sink_module_id = None;
+        self.source_module_id = None;
     }
 }

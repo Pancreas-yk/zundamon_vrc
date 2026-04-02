@@ -114,6 +114,25 @@ if [ "${1:-}" = "--uninstall" ]; then
         done
     fi
 
+    # Ask about Voiceger
+    echo ""
+    read -rp "Voicegerのフォルダとconda環境も削除しますか？ [y/N]: " del_voiceger
+    if [ "$del_voiceger" = "y" ] || [ "$del_voiceger" = "Y" ]; then
+        read -rp "Voicegerのフォルダのパス [デフォルト: $HOME/voiceger_v2]: " vgr_dir
+        vgr_dir="${vgr_dir:-$HOME/voiceger_v2}"
+        if [ -d "$vgr_dir" ]; then
+            rm -rf "$vgr_dir"
+            info "削除: $vgr_dir"
+        fi
+        # Remove conda env
+        for conda_cmd in conda "$HOME/miniconda3/bin/conda" "$HOME/anaconda3/bin/conda"; do
+            if command -v "$conda_cmd" &>/dev/null 2>&1; then
+                "$conda_cmd" env remove -n voiceger -y 2>/dev/null && info "conda環境 'voiceger' を削除しました"
+                break
+            fi
+        done
+    fi
+
     echo ""
     info "アンインストールが完了しました"
     exit 0
@@ -356,6 +375,241 @@ fi
 
 info "設定ファイルを更新: $CONFIG_DIR/config.toml"
 
+# ---------- Step 6: Voicegerのインストール（任意） ----------
+echo ""
+echo -e "${BOLD}Voiceger（英語・多言語TTS）をインストールしますか？${NC}"
+echo "  ずんだもんの声で日本語・英語・中国語・韓国語・広東語が喋れます"
+echo "  GPT-SoVITSベース、GPU推奨、約5GBのストレージが必要です"
+echo ""
+read -rp "インストールしますか？ [y/N]: " install_voiceger
+VOICEGER_INSTALLED=false
+
+if [ "$install_voiceger" = "y" ] || [ "$install_voiceger" = "Y" ]; then
+
+    # --- condaの確認・インストール ---
+    CONDA_CMD=""
+    for candidate in conda "$HOME/miniconda3/bin/conda" "$HOME/anaconda3/bin/conda" \
+                     "/opt/miniconda3/bin/conda" "/opt/anaconda3/bin/conda"; do
+        if command -v "$candidate" &>/dev/null 2>&1; then
+            CONDA_CMD="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$CONDA_CMD" ]; then
+        info "Minicondaをインストール中..."
+        local_miniconda="$HOME/miniconda3"
+        curl -fsSL "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh" \
+            -o /tmp/miniconda_install.sh
+        bash /tmp/miniconda_install.sh -b -p "$local_miniconda"
+        rm -f /tmp/miniconda_install.sh
+        CONDA_CMD="$local_miniconda/bin/conda"
+        # condaをPATHに追加（現セッションのみ）
+        export PATH="$local_miniconda/bin:$PATH"
+        "$CONDA_CMD" init bash 2>/dev/null || true
+        info "Minicondaをインストールしました: $local_miniconda"
+    else
+        info "conda が見つかりました: $CONDA_CMD"
+    fi
+
+    # --- インストール先の選択 ---
+    echo ""
+    read -rp "Voicegerのインストール先 [デフォルト: $HOME/voiceger_v2]: " voiceger_dir
+    VOICEGER_DIR="${voiceger_dir:-$HOME/voiceger_v2}"
+
+    # --- リポジトリのクローン ---
+    if [ -d "$VOICEGER_DIR/.git" ]; then
+        info "既存のVoicegerリポジトリを更新中: $VOICEGER_DIR"
+        git -C "$VOICEGER_DIR" pull --ff-only 2>/dev/null || warn "git pull に失敗しました（ローカル変更がある可能性があります）"
+    else
+        info "Voicegerをクローン中: $VOICEGER_DIR"
+        git clone --depth=1 "https://github.com/zunzun999/voiceger_v2.git" "$VOICEGER_DIR"
+    fi
+
+    # --- conda ToS承認（未承認だと env create が無言で失敗する） ---
+    info "conda利用規約を確認中..."
+    "$CONDA_CMD" tos accept --override-channels \
+        --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || true
+    "$CONDA_CMD" tos accept --override-channels \
+        --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || true
+
+    # --- conda環境の作成 ---
+    if "$CONDA_CMD" env list 2>/dev/null | grep -q "^voiceger "; then
+        info "conda環境 'voiceger' は既に存在します"
+    else
+        info "conda環境 'voiceger' を作成中 (Python 3.9)..."
+        "$CONDA_CMD" create -n voiceger python=3.9 -y
+        # 作成を確認
+        if ! "$CONDA_CMD" env list 2>/dev/null | grep -q "^voiceger "; then
+            error "conda環境の作成に失敗しました。condaのログを確認してください"
+            exit 1
+        fi
+        info "conda環境 'voiceger' を作成しました"
+    fi
+
+    # condaのenvs dir から直接Pythonパスを取得（conda run より確実）
+    VOICEGER_PYTHON="$("$CONDA_CMD" run -n voiceger python -c 'import sys; print(sys.executable)' 2>/dev/null)"
+    if [ -z "$VOICEGER_PYTHON" ] || [ ! -f "$VOICEGER_PYTHON" ]; then
+        # フォールバック: condaのenvs dirから推測
+        CONDA_BASE="$(dirname "$(dirname "$CONDA_CMD")")"
+        VOICEGER_PYTHON="$CONDA_BASE/envs/voiceger/bin/python"
+    fi
+    info "Python: $VOICEGER_PYTHON"
+
+    # --- CUDAバージョンの検出（nvcc不要、nvidia-smiで判定）---
+    CUDA_VER="cu118"
+    if command -v nvidia-smi &>/dev/null; then
+        driver_ver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+        driver_major=$(echo "$driver_ver" | cut -d. -f1)
+        # ドライバー 525+ は CUDA 12.x をサポート
+        if [ "${driver_major:-0}" -ge 525 ]; then
+            CUDA_VER="cu121"
+        fi
+    elif command -v nvcc &>/dev/null; then
+        nvcc_major=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+' | head -1)
+        if [ "${nvcc_major:-0}" -ge 12 ]; then
+            CUDA_VER="cu121"
+        fi
+    fi
+    info "CUDAバックエンド: $CUDA_VER"
+
+    # --- PyTorchのインストール（既にインストール済みならスキップ） ---
+    if "$VOICEGER_PYTHON" -c "import torch; print(torch.__version__)" 2>/dev/null | grep -q "^2\."; then
+        info "PyTorch は既にインストール済みです ($(\"$VOICEGER_PYTHON\" -c 'import torch; print(torch.__version__)' 2>/dev/null))"
+    else
+        info "PyTorch (${CUDA_VER}) をインストール中... (約2GB、時間がかかります)"
+        "$VOICEGER_PYTHON" -m pip install \
+            torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
+            --index-url "https://download.pytorch.org/whl/${CUDA_VER}"
+        info "PyTorchのインストールが完了しました"
+    fi
+
+    # --- Voiceger依存パッケージのインストール ---
+    info "Voicegerの依存パッケージをインストール中..."
+    # scipy: Python 3.9 では 1.11.x が上限のため先にピン
+    if ! "$VOICEGER_PYTHON" -c "import scipy" 2>/dev/null; then
+        "$VOICEGER_PYTHON" -m pip install "scipy==1.11.4" || warn "scipy のインストールに失敗しました"
+    fi
+    if [ -f "$VOICEGER_DIR/GPT-SoVITS/requirements.txt" ]; then
+        "$VOICEGER_PYTHON" -m pip install \
+            --ignore-installed scipy \
+            -r "$VOICEGER_DIR/GPT-SoVITS/requirements.txt" \
+            || warn "一部の依存パッケージのインストールに失敗しました（動作に影響がない場合があります）"
+    fi
+    # soxr: transformers が内部で要求するが requirements.txt に含まれていない
+    "$VOICEGER_PYTHON" -m pip install soxr || warn "soxr のインストールに失敗しました"
+
+    # --- LangSegment 0.2.0 の __init__.py パッチ ---
+    LANGSEG_INIT=$("$VOICEGER_PYTHON" -c \
+        "import importlib.util, os; s=importlib.util.find_spec('LangSegment'); print(os.path.join(os.path.dirname(s.origin),'__init__.py'))" 2>/dev/null)
+    if [ -n "$LANGSEG_INIT" ] && grep -q "setLangfilters" "$LANGSEG_INIT" 2>/dev/null; then
+        if ! grep -q "setLangfilters = setfilters" "$LANGSEG_INIT" 2>/dev/null; then
+            info "LangSegment __init__.py にエイリアスを追加中..."
+            sed -i 's/from \.LangSegment import \(.*\)setLangfilters,getLangfilters,\(.*\)/from .LangSegment import \1\2/' "$LANGSEG_INIT"
+            printf '\n# aliases missing from this version\nsetLangfilters = setfilters\ngetLangfilters = getfilters\n' >> "$LANGSEG_INIT"
+        fi
+    fi
+
+    # --- CUDA対応のffmpegとその他システム依存 ---
+    VOICEGER_PKGS=(ffmpeg)
+    VOICEGER_MISSING=()
+    for pkg in "${VOICEGER_PKGS[@]}"; do
+        if ! pacman -Qi "$pkg" &>/dev/null; then
+            VOICEGER_MISSING+=("$pkg")
+        fi
+    done
+    if [ ${#VOICEGER_MISSING[@]} -gt 0 ]; then
+        sudo pacman -S --needed --noconfirm "${VOICEGER_MISSING[@]}"
+    fi
+
+    # --- G2PWModel（中国語TTS用ピンイン推論モデル）のダウンロード ---
+    G2PW_DIR="$VOICEGER_DIR/GPT-SoVITS/GPT_SoVITS/text/G2PWModel"
+    if [ ! -f "$G2PW_DIR/g2pW.onnx" ]; then
+        info "G2PWModel（中国語ピンイン推論）をダウンロード中..."
+        G2PW_DIR="$G2PW_DIR" "$VOICEGER_PYTHON" - <<'PYEOF'
+from huggingface_hub import snapshot_download
+import os
+dest = os.environ["G2PW_DIR"]
+snapshot_download(repo_id="alextomcat/G2PWModel", local_dir=dest)
+print("G2PWModel ダウンロード完了")
+PYEOF
+        info "G2PWModel のダウンロードが完了しました"
+    else
+        info "G2PWModel は既に存在します"
+    fi
+
+    # --- GPT-SoVITS 事前学習モデルのダウンロード ---
+    PRETRAINED_DIR="$VOICEGER_DIR/GPT-SoVITS/GPT_SoVITS/pretrained_models"
+    GSV_CKPT="$PRETRAINED_DIR/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt"
+    if [ ! -f "$GSV_CKPT" ]; then
+        info "GPT-SoVITS 事前学習モデルをダウンロード中... (数GB、時間がかかります)"
+        PRETRAINED_DIR="$PRETRAINED_DIR" "$VOICEGER_PYTHON" - <<'PYEOF'
+from huggingface_hub import snapshot_download
+import os
+dest = os.environ["PRETRAINED_DIR"]
+snapshot_download(repo_id="lj1995/GPT-SoVITS", local_dir=dest,
+                  ignore_patterns=["*.git*", ".gitattributes"])
+print("GPT-SoVITS 事前学習モデルのダウンロード完了")
+PYEOF
+        info "GPT-SoVITS 事前学習モデルのダウンロードが完了しました"
+    else
+        info "GPT-SoVITS 事前学習モデルは既に存在します"
+    fi
+
+    # --- ずんだもん Fine-tuned モデルのダウンロード ---
+    ZUNDAMON_MODEL_DIR="$VOICEGER_DIR/GPT-SoVITS/zundamon_models"
+    if [ ! -d "$ZUNDAMON_MODEL_DIR" ] || [ -z "$(ls -A "$ZUNDAMON_MODEL_DIR" 2>/dev/null)" ]; then
+        info "ずんだもん Fine-tuned モデルをダウンロード中..."
+        "$VOICEGER_PYTHON" -c "
+from huggingface_hub import snapshot_download
+import os
+dest = os.path.expanduser('$ZUNDAMON_MODEL_DIR')
+snapshot_download(repo_id='zunzunpj/zundamon_GPT-SoVITS', local_dir=dest,
+                  ignore_patterns=['*.git*'])
+print('ずんだもんモデルのダウンロード完了')
+"
+        info "ずんだもん Fine-tuned モデルのダウンロードが完了しました"
+    else
+        info "ずんだもん Fine-tuned モデルは既に存在します"
+    fi
+
+    # --- tts_infer.yaml に GPU設定を適用（サーバー起動前に設定しないと上書きされる） ---
+    TTSYAML="$VOICEGER_DIR/GPT-SoVITS/GPT_SoVITS/configs/tts_infer.yaml"
+    if [ -f "$TTSYAML" ]; then
+        if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
+            info "tts_infer.yaml を CUDA モードに設定中..."
+            sed -i 's/^\(\s*device:\s*\)cpu/\1cuda/' "$TTSYAML"
+            sed -i 's/^\(\s*is_half:\s*\)false/\1true/' "$TTSYAML"
+            info "  device: cuda, is_half: true (FP16) を設定しました"
+        else
+            info "GPU が検出されませんでした。tts_infer.yaml は CPU モードのままです"
+        fi
+    fi
+
+    # --- 起動コマンドの構築（direct Python path で conda activation 不要） ---
+    VOICEGER_API="$VOICEGER_DIR/GPT-SoVITS/api_v2.py"
+    VOICEGER_CMD="$VOICEGER_PYTHON $VOICEGER_API"
+    VOICEGER_REF_AUDIO="$VOICEGER_DIR/reference/01_ref_emoNormal026.wav"
+    VOICEGER_REF_TEXT=$(cat "$VOICEGER_DIR/reference/ref_text.txt" 2>/dev/null || echo "流し切りが完全に入ればデバフの効果が付与される")
+
+    # --- config.tomlにVoiceger設定を書き込む ---
+    update_or_append() {
+        local key="$1" val="$2"
+        if grep -q "^${key}" "$CONFIG_DIR/config.toml"; then
+            sed -i "s|^${key}.*|${key} = \"${val}\"|" "$CONFIG_DIR/config.toml"
+        else
+            echo "${key} = \"${val}\"" >> "$CONFIG_DIR/config.toml"
+        fi
+    }
+    update_or_append "voiceger_path"      "$VOICEGER_CMD"
+    update_or_append "voiceger_ref_audio" "$VOICEGER_REF_AUDIO"
+    update_or_append "voiceger_prompt_text" "$VOICEGER_REF_TEXT"
+    update_or_append "voiceger_prompt_lang" "ja"
+
+    info "Voicegerのインストールが完了しました: $VOICEGER_DIR"
+    VOICEGER_INSTALLED=true
+fi
+
 # ---------- 完了 ----------
 echo ""
 echo -e "${GREEN}${BOLD}===== インストール完了！ =====${NC}"
@@ -363,6 +617,12 @@ echo ""
 echo "アプリケーションメニューから「ZunduxTTS」を起動できます。"
 echo "またはコマンドラインから: zundux_tts_launch.sh"
 echo ""
+if [ "$VOICEGER_INSTALLED" = true ]; then
+    echo -e "${GREEN}Voiceger: インストール済み${NC}"
+    echo "  設定 → Voiceger接続 から動作確認できます"
+    echo "  起動コマンド: $VOICEGER_CMD"
+    echo ""
+fi
 if [ "$NEED_RELOGIN" = true ]; then
     echo -e "${YELLOW}${BOLD}重要: dockerグループへの追加を反映するため、再ログインしてください。${NC}"
     echo ""

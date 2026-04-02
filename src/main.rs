@@ -7,7 +7,8 @@ mod tts;
 mod ui;
 mod validation;
 
-use config::AppConfig;
+use config::{AppConfig, TtsEngineType};
+use tts::voiceger::VoicegerEngine;
 use tts::voicevox::VoicevoxEngine;
 use tts::TtsManager;
 
@@ -117,15 +118,26 @@ fn main() -> eframe::Result<()> {
         .build()
         .expect("Failed to create tokio runtime");
 
-    let engine = VoicevoxEngine::new(&config.voicevox_url);
-    let tts_manager = TtsManager::new(Box::new(engine));
+    let engine: Box<dyn tts::TtsEngine> = match config.active_engine {
+        TtsEngineType::Voicevox => Box::new(VoicevoxEngine::new(&config.voicevox_url)),
+        TtsEngineType::Voiceger => Box::new(VoicegerEngine::new(
+            &config.voiceger_url,
+            &config.voiceger_ref_audio,
+            &config.voiceger_prompt_text,
+            &config.voiceger_prompt_lang,
+        )),
+    };
+    let tts_manager = TtsManager::new(engine);
 
     let handle = rt.handle().clone();
 
     let icon = load_icon();
 
+    let initial_width = config.window_width;
+    let initial_height = config.window_height;
+
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([560.0, 700.0])
+        .with_inner_size([initial_width, initial_height])
         .with_min_inner_size([400.0, 500.0])
         .with_transparent(true)
         .with_decorations(false);

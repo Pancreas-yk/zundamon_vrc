@@ -1,4 +1,5 @@
 use crate::app::AppState;
+use crate::config::TtsEngineType;
 use crate::ui::theme::Theme;
 use egui::CornerRadius;
 
@@ -10,39 +11,61 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.add_space(theme.spacing_large);
 
-    // -- Preset chips --
+    // -- Preset chips (grouped by engine) --
     let chip_rounding = CornerRadius::same(theme.chip_rounding as u8);
-    ui.horizontal_wrapped(|ui| {
-        for i in 0..state.config.presets.len() {
-            let name = state.config.presets[i].name.clone();
-            let is_active = state.active_preset_idx == Some(i);
-            let text_color = if is_active {
-                theme.color(theme.accent)
-            } else {
-                theme.color(theme.text_secondary)
-            };
-            let btn = ui.add(
-                egui::Button::new(
-                    egui::RichText::new(&name).color(text_color).size(11.0),
-                )
-                .corner_radius(chip_rounding)
-                .fill(theme.color(theme.chip_background)),
-            );
-            if btn.clicked() && !is_active {
-                state.active_preset_idx = Some(i);
-                state.config.speaker_id = state.config.presets[i].speaker_id;
-                state.config.synth_params = state.config.presets[i].synth_params.clone();
-                let _ = state.config.save();
+    let active_engine = state.config.active_engine.clone();
+    for engine_group in [TtsEngineType::Voicevox, TtsEngineType::Voiceger] {
+        // Only show presets for the currently active engine
+        if engine_group != active_engine {
+            continue;
+        }
+        let group_presets: Vec<usize> = (0..state.config.presets.len())
+            .filter(|&i| state.config.presets[i].engine == engine_group)
+            .collect();
+        if group_presets.is_empty() {
+            continue;
+        }
+        let label = match engine_group {
+            TtsEngineType::Voicevox => "VOICEVOX",
+            TtsEngineType::Voiceger => "Voiceger",
+        };
+        ui.label(
+            egui::RichText::new(label)
+                .size(9.0)
+                .color(theme.color(theme.text_muted)),
+        );
+        ui.horizontal_wrapped(|ui| {
+            for i in group_presets {
+                let name = state.config.presets[i].name.clone();
+                let is_active = state.active_preset_idx == Some(i);
+                let text_color = if is_active {
+                    theme.color(theme.accent)
+                } else {
+                    theme.color(theme.text_secondary)
+                };
+                let btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(&name).color(text_color).size(11.0),
+                    )
+                    .corner_radius(chip_rounding)
+                    .fill(theme.color(theme.chip_background)),
+                );
+                if btn.clicked() && !is_active {
+                    state.active_preset_idx = Some(i);
+                    state.config.speaker_id = state.config.presets[i].speaker_id;
+                    state.config.synth_params = state.config.presets[i].synth_params.clone();
+                    let _ = state.config.save();
+                }
             }
-        }
-        if state.config.presets.is_empty() {
-            ui.label(
-                egui::RichText::new("設定でプリセットを作成してください")
-                    .size(10.0)
-                    .color(theme.color(theme.text_muted)),
-            );
-        }
-    });
+        });
+    }
+    if state.config.presets.is_empty() {
+        ui.label(
+            egui::RichText::new("設定でプリセットを作成してください")
+                .size(10.0)
+                .color(theme.color(theme.text_muted)),
+        );
+    }
 
     ui.add_space(theme.spacing_large);
 
@@ -53,10 +76,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         .inner_margin(egui::Margin::same(theme.spacing_medium as i8));
 
     input_frame.show(ui, |ui| {
+        let desired_rows = ((ui.available_height() / 120.0) as usize).clamp(2, 10);
         let response = ui.add(
             egui::TextEdit::multiline(&mut state.input_text)
                 .id(egui::Id::new("main_text_input"))
-                .desired_rows(3)
+                .desired_rows(desired_rows)
                 .desired_width(f32::INFINITY)
                 .hint_text("テキストを入力してEnterで送信 (Shift+Enterで改行)")
                 .frame(false),

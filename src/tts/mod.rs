@@ -1,4 +1,5 @@
 pub mod types;
+pub mod voiceger;
 pub mod voicevox;
 
 use anyhow::Result;
@@ -29,6 +30,7 @@ impl TtsManager {
         self.engine.synthesize(text, params).await
     }
 
+    #[allow(dead_code)]
     pub async fn health_check(&self) -> Result<bool> {
         self.engine.health_check().await
     }

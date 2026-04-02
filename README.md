@@ -1,269 +1,245 @@
 # ZunduxTTS
 
-VOICEVOX の音声合成を VRChat の仮想マイクとして使える Linux デスクトップアプリです。テキストを入力すると VOICEVOX で音声合成し、PulseAudio の仮想シンクを経由して VRChat にマイク入力として送信します。
+Linux デスクトップで動作する VRChat 向け TTS 仮想マイクアプリです。テキストを入力すると VOICEVOX または Voiceger (GPT-SoVITS) で音声合成し、PulseAudio の仮想シンクを経由して VRChat にマイク入力として送信します。
 
 ## 機能
 
-- **テキスト音声合成** — テキスト入力 → VOICEVOX で合成 → 仮想マイクに出力
-- **テンプレート** — よく使うフレーズをワンクリックで送信
-- **マイク切替** — ずんだもんの声と自分のマイクをワンクリックで切り替え
-- **停止ボタン** — 合成中・再生中の音声を即座に停止
-- **サウンドボード** — フォルダ内の音声ファイルをワンクリック再生
-- **読み上げ辞書** — VOICEVOX ユーザー辞書 + サイレント辞書（特定の単語を読み上げない）
+- **2つの TTSエンジン**
+  - **VOICEVOX** — 高品質な日本語 TTS。ずんだもんをはじめ多数の音声キャラクター
+  - **Voiceger (GPT-SoVITS)** — 日本語・英語・中文・한국어・粤語の5言語対応。GPU 推論でリアルタイムに近い速度
+- **スピーカープリセット** — エンジンごとに音声・スタイル・パラメータをプリセット登録。テンプレートとの組み合わせ自由
+- **テンプレート** — よく使うフレーズをワンクリックで送信。プリセットを選んで展開も可能
+- **マイク切替** — TTS の声と実マイクをワンクリックで切り替え（パススルー）
+- **ノイズキャンセル** — RNNoise 対応環境では実マイクのノイズ除去が可能
+- **読み上げ辞書**
+  - VOICEVOX ユーザー辞書（API 経由）
+  - Voiceger クライアント辞書（言語ごとの読み替え）
+  - サイレント辞書（両エンジン共通・特定ワードを無音化）
 - **OSC チャットボックス** — VRChat の OSC 経由でチャットボックスにテキストを表示
+- **サウンドボード** — フォルダ内の音声ファイルをワンクリック再生
 - **音声エフェクト** — エコー（ディレイ・減衰の調整）
-- **テーマカスタマイズ** — 各UI要素の色、ウィンドウ・タイトルバーの透明度を自由に変更
-- **VOICEVOX 自動起動** — Docker コンテナまたはローカルバイナリを自動で起動・管理
+- **テーマカスタマイズ** — 色・透明度を自由に変更
+- **自動起動** — VOICEVOX / Voiceger を アプリ起動時に自動起動・管理
+- **言語不一致検出** — Voiceger で選択言語とテキストが一致しない場合に警告
 
 ## 必要な環境
 
-- **Linux** (PulseAudio または PipeWire+pipewire-pulse が動作する環境)
-- **Rust** (ビルドに必要 / 1.70 以上推奨)
-- **PulseAudio** (`pactl`, `paplay` コマンドが使えること)
-- **VOICEVOX Engine** (音声合成サーバー / ローカルバイナリまたは Docker)
-- **Docker** (VOICEVOX を Docker で動かす場合)
-- **NVIDIA Container Toolkit** (Docker + GPU を使う場合)
-- **Noto Sans CJK フォント** (日本語表示用 / 任意だが強く推奨)
+### 共通
+
+- **Linux** (PulseAudio または PipeWire + pipewire-pulse が動作する環境)
+- **PulseAudio ツール** (`pactl`, `paplay`)
+- **ffmpeg** (Voiceger の音声変換・ピッチ/音量調整に使用)
+- **Noto Sans CJK フォント** (日本語・CJK 表示用)
+
+### VOICEVOX
+
+- **VOICEVOX Engine** — ローカルバイナリまたは Docker
+
+### Voiceger (任意)
+
+- **Miniconda / Anaconda**
+- **NVIDIA GPU** 推奨 (7GB+ VRAM、CUDA 12.x)
+- GPT-SoVITS リポジトリ (`~/voiceger_v2` などに配置)
 
 ## インストール
 
-### 1. 依存パッケージの導入
+### インストールスクリプト (Arch / Manjaro)
 
-#### Arch Linux / Manjaro
+依存パッケージ・VOICEVOX Docker・Voiceger のセットアップをまとめて行います。
 
 ```bash
-sudo pacman -S pulseaudio rust noto-fonts-cjk
+git clone https://github.com/Pancreas-yk/zundux-tts
+cd zundux-tts
+
+# リリースバイナリをダウンロードして導入
+bash install.sh
+
+# ソースからビルドして導入
+bash install.sh --from-source
 ```
 
-#### Ubuntu / Debian
+スクリプトが行うこと:
+- 依存パッケージのインストール (`docker`, `noto-fonts-cjk`, `ffmpeg` など)
+- NVIDIA GPU 検出 → GPU 版 / CPU 版 VOICEVOX Docker イメージのダウンロード
+- Voiceger のインストール（任意選択）:
+  - conda 環境 (`voiceger`) の作成
+  - PyTorch (CUDA 対応) のインストール
+  - GPT-SoVITS 事前学習モデルのダウンロード
+  - ずんだもん Fine-tuned モデルのダウンロード
+  - G2PWModel（中国語ピンイン推論）のダウンロード
+  - GPU モード (`device: cuda`) の設定
+- デスクトップエントリ・アイコンの登録
+
+### アンインストール
 
 ```bash
-sudo apt install pulseaudio libpulse0 cargo fonts-noto-cjk
+bash install.sh --uninstall
 ```
 
-#### Fedora
+### 手動ビルド
 
 ```bash
-sudo dnf install pulseaudio rust cargo google-noto-sans-cjk-fonts
-```
-
-### 2. VOICEVOX Engine の準備
-
-VOICEVOX Engine をローカルで動作させる必要があります。以下のいずれかの方法で用意してください。
-
-**方法A: 公式バイナリ**
-
-[VOICEVOX 公式サイト](https://voicevox.hiroshiba.jp/) からダウンロードし、任意の場所に展開します。
-
-**方法B: Docker (CPU)**
-
-```bash
-docker pull voicevox/voicevox_engine:latest
-docker run -p 50021:50021 --name zundux-voicevox voicevox/voicevox_engine:latest
-```
-
-**方法C: Docker (NVIDIA GPU — 推奨)**
-
-GPU を使うと音声合成が大幅に高速化されます。事前に NVIDIA Container Toolkit のセットアップが必要です。
-
-```bash
-# 1. NVIDIA Container Toolkit をインストール
-#    Arch Linux / Manjaro (AUR):
-yay -S nvidia-container-toolkit
-#    Ubuntu / Debian:
-#    https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html の手順に従う
-
-# 2. Docker デーモンを再起動
-sudo systemctl restart docker
-
-# 3. GPU が認識されるか確認
-docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi
-
-# 4. VOICEVOX Engine (GPU版) を取得・起動
-docker pull voicevox/voicevox_engine:nvidia-latest
-docker run --gpus all -p 50021:50021 --name zundux-voicevox voicevox/voicevox_engine:nvidia-latest
-```
-
-> **注意**: `docker: Error response from daemon: could not select device driver "" with capabilities: [[gpu]]` というエラーが出る場合は、nvidia-container-toolkit がインストールされていないか、Docker の再起動が必要です。
-
-> **注意**: `--rm` は付けないでください。付けるとコンテナ停止時に削除され、毎回新規作成になります。コンテナは `docker stop` / `docker start` で再利用されるため、`docker run` は初回のみで済みます。
-
-起動後、`http://127.0.0.1:50021` で API が利用可能になります。
-
-### 3. ビルド
-
-```bash
-git clone <リポジトリURL>
-cd zundamon_vrc
 cargo build --release
+# バイナリ: target/release/zundux_tts
 ```
 
-ビルド成果物は `target/release/zundux_tts` に生成されます。
-
-### 4. デスクトップエントリの登録 (任意)
-
-アプリケーションランチャーから起動したい場合は、`.desktop` ファイルをコピーします。
-
-```bash
-# Exec= のパスを自分の環境に合わせて編集してください
-cp zundux_tts.desktop ~/.local/share/applications/
-```
-
-## 起動方法
-
-### 手動起動
-
-```bash
-# 1. VOICEVOX Engine を起動 (別ターミナルで)
-#    Docker (初回作成済みのコンテナを起動):
-docker start zundux-voicevox
-#    バイナリ:
-/path/to/voicevox_engine/run
-
-# 2. アプリを起動
-./target/release/zundux_tts
-# または
-cargo run --release
-```
-
-### 自動起動の設定
-
-アプリと VOICEVOX の両方を PC 起動時に自動的に起動できます。
-
-**1. VOICEVOX 自動起動の設定**
-
-アプリの「設定」タブ → 「起動設定」セクションで **「アプリ起動時にVOICEVOXを自動起動」** にチェックを入れると、アプリ起動時に停止中の Docker コンテナを自動で `docker start` します。
-
-バイナリ版を使う場合は **VOICEVOX実行パス** にパスを入力してください（例: `/path/to/voicevox_engine/run`）。
-
-**2. アプリ自動起動の設定 (XDG autostart)**
-
-「設定」タブ → 「起動設定」で **「PC起動時にアプリを自動起動」** にチェックを入れると、`~/.config/autostart/zundux_tts.desktop` が自動で作成され、ログイン時にアプリが起動します。
-
-> 自動起動の `.desktop` ファイルは現在の実行ファイルのパスを参照します。`cargo build --release` でビルドした場合は `target/release/zundux_tts` が登録されます。
-
-### 初回セットアップ
-
-1. アプリが起動したら、ステータスバーで VOICEVOX の接続状態を確認します。「未接続」と表示されている場合は設定タブから接続先 URL を確認してください。
-2. PulseAudio 仮想シンクはアプリ起動時に自動作成されます。`ZundamonVRC.monitor` というマイクソースが利用可能になります。
+## 初回セットアップ
 
 ### VRChat 側の設定
 
-VRChat のマイク設定で `ZundamonVRC.monitor`（または PulseAudio の設定で「ZundamonVRC_mic」として表示されるソース）を入力デバイスとして選択してください。
+アプリを起動すると `ZunduxMic` という仮想シンクと `ZunduxMic_mic` という仮想ソースが PulseAudio に作成されます。
+
+VRChat のマイク設定で **`ZunduxMic_mic`**（または `ZunduxMic.monitor`）を入力デバイスとして選択してください。
+
+> 仮想デバイスはアプリ終了後も PipeWire セッション中は保持されます。アプリを再起動してもマイクのトグルは不要です。ただしログアウト・再起動後は初回のみ再選択が必要です。
+
+### VOICEVOX の設定
+
+設定 → General → 起動設定:
+- **VOICEVOXを自動起動**: ON にすると起動時に Docker コンテナ / ローカルバイナリを自動起動
+- **VOICEVOX実行パス**: Docker を使う場合は `docker run --rm -p 50021:50021 voicevox/voicevox_engine:nvidia-latest` など
+
+### Voiceger の設定
+
+設定 → Voiceger → 接続:
+- **起動コマンド**: `conda run -n voiceger python /path/to/GPT-SoVITS/api_v2.py` など
+- **参照音声**: ずんだもんの参照音声ファイル (`.wav`)
+- **参照テキスト** / **参照言語**: 参照音声の書き起こしと言語
+
+Voiceger は言語ごとに**プリセット**が必要です（設定 → Voiceger → プリセット）。
 
 ## 使い方
 
 ### テキスト入力
 
-- テキストボックスにテキストを入力して **Enter** で送信（音声合成 → 再生）
-- **Shift+Enter** で改行
-- 合成中は **STOP** ボタンで停止可能
-
-### マイク切替
-
-入力画面の **MIC** ボタンで、ずんだもんの声と自分のマイクを切り替えられます。
-
-- **MIC: OFF** (デフォルト) — テキスト入力した内容をずんだもんの声で出力
-- **MIC: ON** — 自分のマイクの音声をそのまま仮想デバイスに流す
-
-設定タブの「オーディオ」からマイクソースを選択できます。
+- テキストボックスに入力して **Enter** で送信（Shift+Enter で改行）
+- **STOP** ボタンで再生を即座に停止
+- プリセットチップをクリックして音声・言語を切り替え
 
 ### テンプレート
 
-よく使うフレーズをテンプレートとして登録できます。ボタンをクリックするだけで即座に音声を合成・送信します。デフォルトでは以下が登録されています:
+Input タブのテンプレートボタンをクリックで即座に合成・送信。設定 → General → テンプレートで編集・並び替え可能。
 
-- こんにちは！
-- ありがとう！
-- おつかれさまなのだ！
-- 了解なのだ！
+### マイク切替
+
+**MIC** ボタンで TTS 出力と実マイクのパススルーを切り替え。設定 → Audio → マイクソースでデバイスを選択。
 
 ### サウンドボード
 
-設定タブでフォルダを指定すると、フォルダ内の音声ファイルをワンクリックで再生できます。効果音やBGMの再生に便利です。
-
-### 読み上げ辞書
-
-- **VOICEVOX ユーザー辞書** — VOICEVOX 側に登録された辞書エントリを表示・管理
-- **サイレント辞書** — 特定の単語を読み上げ対象から除外（テキストは送信するが音声合成しない）
+設定 → Audio → サウンドボード でフォルダを指定（参照ボタンあり）。Input タブのサウンドボードパネルからワンクリック再生。
 
 ### OSC チャットボックス
 
-VRChat の OSC 機能を使って、送信テキストをチャットボックスにも表示できます。設定タブの「OSC設定」で有効化し、アドレスとポートを設定してください。
+設定 → General → OSC設定 で有効化。デフォルトは `127.0.0.1:9000`（VRChat デフォルト）。
 
-### 音声エフェクト
+### 読み上げ辞書
 
-設定タブの「音声エフェクト」からエコーを有効化できます。ディレイ（ms）と減衰を調整できます。
+| 辞書 | 場所 | 内容 |
+|---|---|---|
+| VOICEVOX辞書 | 設定 → VOICEVOX → 辞書 | VOICEVOX API に登録される読み替えルール |
+| Voiceger辞書 | 設定 → Voiceger → 辞書 | 言語ごとのクライアント辞書（合成前に置換） |
+| サイレント辞書 | 設定 → Voiceger → 辞書 | 両エンジン共通・特定ワードを無音化 |
 
-### 設定項目
+## 設定項目
+
+設定は `~/.config/zundux_tts/config.toml` に自動保存されます。
+
+### General
 
 | 項目 | 説明 |
 |---|---|
-| VOICEVOX URL | VOICEVOX Engine の接続先 (デフォルト: `http://127.0.0.1:50021`) |
-| VOICEVOX実行パス | ローカルバイナリのパス（Docker の場合は空でOK） |
-| VOICEVOX自動起動 | アプリ起動時に VOICEVOX を自動的に起動する |
-| アプリ自動起動 | PC ログイン時にアプリを自動起動 (XDG autostart) |
-| スピーカー | 使用する音声キャラクター・スタイル (デフォルト: ずんだもん ノーマル) |
-| 速度 / ピッチ / 抑揚 / 音量 | 音声合成パラメータの調整 |
-| オーディオモニタリング | 合成音声を自分でも聴く |
-| マイクソース | マイク切替時に使用するマイクデバイス |
-| OSC チャットボックス | VRChat OSC 経由でテキストをチャットボックスに表示 |
-| エコー | ディレイとアテネの調整 |
-| サウンドボード | 音声ファイルフォルダの指定 |
-| 仮想デバイス名 | PulseAudio に作成するシンクの名前 (デフォルト: `ZundamonVRC`) |
-| テーマ | 各UI要素の色（#RRGGBB / #RRGGBBAA）、ウィンドウ・タイトルバーの透明度 |
+| VOICEVOX自動起動 | アプリ起動時に VOICEVOX を自動起動 |
+| Voiceger自動起動 | アプリ起動時に Voiceger を自動起動 |
+| アプリ自動起動 | ログイン時にアプリを自動起動 (XDG autostart) |
+| TTSエンジン | VOICEVOX / Voiceger の切り替え（再起動ボタンあり）|
+| OSC | チャットボックス送信の有効化・アドレス・ポート |
+| テンプレート | フレーズの追加・編集・削除 |
+| テーマ | 色・透明度のカスタマイズ |
 
-設定は `~/.config/zundamon_vrc/config.toml` に自動保存されます。
+### VOICEVOX
+
+| 項目 | 説明 |
+|---|---|
+| 接続URL | VOICEVOX Engine のアドレス（デフォルト: `http://127.0.0.1:50021`）|
+| 実行パス | バイナリ or Docker コマンド |
+| 音声パラメータ | 速度・ピッチ・抑揚・音量 |
+| プリセット | スピーカー・スタイル・パラメータのセット |
+| 辞書 | ユーザー辞書エントリの管理 |
+
+### Voiceger
+
+| 項目 | 説明 |
+|---|---|
+| 接続URL | GPT-SoVITS API のアドレス（デフォルト: `http://127.0.0.1:9880`）|
+| 起動コマンド | サーバー起動コマンド |
+| 参照音声 / テキスト / 言語 | Zero-shot 合成のリファレンス |
+| 音声パラメータ | 速度・ピッチ・抑揚（temperature）・音量 |
+| プリセット | 言語ごとのプリセット（必須）|
+| 辞書 | 言語ごとのクライアント読み替え辞書 |
+
+### Audio
+
+| 項目 | 説明 |
+|---|---|
+| オーディオモニタリング | 合成音声を自分でも聴く |
+| マイクソース | パススルー時のマイクデバイス |
+| ノイズキャンセル | RNNoise による実マイクのノイズ除去 |
+| 仮想デバイス名 | PulseAudio シンク名（デフォルト: `ZunduxMic`）|
+| 音声エフェクト | エコー（ディレイ ms・減衰）|
+| サウンドボード | フォルダパス・音量ゲイン調整 |
 
 ## トラブルシューティング
 
 ### VOICEVOX に接続できない
 
-- VOICEVOX Engine が起動しているか確認してください: `curl http://127.0.0.1:50021/version`
-- Docker の場合はコンテナが動いているか確認: `docker ps`
-- 停止中のコンテナがある場合は再起動: `docker start zundux-voicevox`
-- 設定タブで URL が正しいか確認してください
-
-### Docker で GPU エラーが出る
-
-`could not select device driver "" with capabilities: [[gpu]]` というエラーの場合:
-
-1. NVIDIA ドライバーが入っているか確認: `nvidia-smi`
-2. nvidia-container-toolkit をインストール:
-   - Arch / Manjaro: `yay -S nvidia-container-toolkit`
-   - Ubuntu / Debian: [NVIDIA 公式ガイド](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-3. Docker を再起動: `sudo systemctl restart docker`
-4. GPU なしで使う場合は Docker コマンドから `--gpus all` を外し、イメージを `voicevox/voicevox_engine:latest` に変更
-
-### Docker コンテナの再作成
-
-設定を変更したい場合（ポート番号やGPU設定など）は、一度コンテナを削除して再作成してください:
-
 ```bash
-docker stop zundux-voicevox
-docker rm zundux-voicevox
-docker run --gpus all -p 50021:50021 --name zundux-voicevox voicevox/voicevox_engine:nvidia-latest
+curl http://127.0.0.1:50021/version
+docker ps  # Docker の場合
 ```
 
-### 仮想デバイスが作成できない
+設定タブで URL とポートを確認し、「VOICEVOXを再起動」ボタンを試してください。
 
-- PulseAudio が動作しているか確認してください: `pactl info`
-- PipeWire 環境の場合は `pipewire-pulse` がインストールされているか確認してください
+### Voiceger で 400 エラーが出る
 
-### 日本語が表示されない
+`tail -f /tmp/zundux_voiceger.log` でサーバーログを確認します。よくある原因:
 
-- Noto Sans CJK フォントがインストールされているか確認してください
-- フォントは以下のパスのいずれかに配置される必要があります:
-  - `/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc`
-  - `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`
-  - `/usr/share/fonts/noto-cjk-fonts/NotoSansCJK-Regular.ttc`
-  - `/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc`
+- **サーバー起動中**: 起動完了まで数十秒かかります。しばらく待ってから再試行してください
+- **中国語で G2PWModel エラー**: `GPT_SoVITS/text/G2PWModel/` にモデルが必要です（install.sh で自動ダウンロード）
+- **CUDA OOM**: 他のプロセスが GPU メモリを占有しています。`nvidia-smi` で確認し、不要なプロセスを終了してください
+
+### GPU メモリ不足 (CUDA OOM)
+
+`tts_infer.yaml` で `is_half: true`（FP16）になっているか確認してください:
+
+```bash
+cat ~/voiceger_v2/GPT-SoVITS/GPT_SoVITS/configs/tts_infer.yaml | grep "device\|is_half"
+```
+
+FP16 でも足りない場合は `device: cpu` に変更して CPU モードに切り替えてください。
 
 ### VRChat でマイクとして認識されない
 
-- アプリの設定タブで仮想デバイスを「作成」済みか確認してください
-- VRChat のマイク設定で `ZundamonVRC.monitor` を選択してください
-- PulseAudio のボリューム設定 (`pavucontrol`) で仮想デバイスがミュートされていないか確認してください
+VRChat のマイク設定で **`ZunduxMic_mic`** を選択してください。
+
+アプリ再起動後に音が出なくなった場合は、VRChat でマイクを一度別のデバイスに変えてから戻してください（PipeWire のセッションがリセットされた場合のみ必要）。
+
+### 仮想デバイスが作成できない
+
+```bash
+pactl info  # PulseAudio / PipeWire 動作確認
+```
+
+PipeWire 環境では `pipewire-pulse` が必要です。
+
+### 日本語が表示されない
+
+Noto Sans CJK フォントをインストールしてください:
+
+```bash
+# Arch / Manjaro
+sudo pacman -S noto-fonts-cjk
+```
 
 ## ライセンス
 
-VOICEVOX の利用規約に従ってください。各音声キャラクターにはそれぞれ利用規約があります。
+VOICEVOX・Voiceger の音声を使用する際はそれぞれの利用規約に従ってください。各音声キャラクターにも個別の利用規約があります。

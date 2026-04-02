@@ -5,12 +5,22 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TtsEngineType {
+    #[default]
+    Voicevox,
+    Voiceger,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub voicevox_url: String,
     pub voicevox_path: String,
     pub auto_launch_voicevox: bool,
+    #[serde(default)]
+    pub auto_launch_voiceger: bool,
     pub auto_start_app: bool,
     pub synth_params: SynthParamsConfig,
     pub speaker_id: u32,
@@ -41,6 +51,26 @@ pub struct AppConfig {
     pub presets: Vec<SpeakerPreset>,
     #[serde(default)]
     pub templates_default_expanded: bool,
+    #[serde(default = "default_window_width")]
+    pub window_width: f32,
+    #[serde(default = "default_window_height")]
+    pub window_height: f32,
+    #[serde(default)]
+    pub active_engine: TtsEngineType,
+    #[serde(default = "default_voiceger_url")]
+    pub voiceger_url: String,
+    #[serde(default)]
+    pub voiceger_path: String,
+    #[serde(default)]
+    pub voiceger_ref_audio: String,
+    #[serde(default)]
+    pub voiceger_prompt_text: String,
+    #[serde(default = "default_voiceger_prompt_lang")]
+    pub voiceger_prompt_lang: String,
+    /// Per-language client-side text replacements applied before Voiceger synthesis.
+    /// Outer key = language code (ja/en/zh/ko/yue), inner key = surface, value = reading.
+    #[serde(default)]
+    pub voiceger_dict: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +87,8 @@ pub struct SpeakerPreset {
     pub name: String,
     pub speaker_id: u32,
     pub synth_params: SynthParamsConfig,
+    #[serde(default)]
+    pub engine: TtsEngineType,
 }
 
 fn default_target_lufs() -> f64 {
@@ -65,6 +97,22 @@ fn default_target_lufs() -> f64 {
 
 fn default_loudness_tolerance() -> f64 {
     3.0
+}
+
+fn default_window_width() -> f32 {
+    560.0
+}
+
+fn default_window_height() -> f32 {
+    700.0
+}
+
+fn default_voiceger_url() -> String {
+    "http://localhost:9880".to_string()
+}
+
+fn default_voiceger_prompt_lang() -> String {
+    "ja".to_string()
 }
 
 impl Default for SynthParamsConfig {
@@ -84,6 +132,7 @@ impl Default for AppConfig {
             voicevox_url: validation::DEFAULT_VOICEVOX_URL.to_string(),
             voicevox_path: String::new(),
             auto_launch_voicevox: false,
+            auto_launch_voiceger: false,
             auto_start_app: false,
             synth_params: SynthParamsConfig::default(),
             speaker_id: 3, // ずんだもん (ノーマル)
@@ -113,27 +162,171 @@ impl Default for AppConfig {
             theme: Theme::default(),
             presets: Self::default_presets(),
             templates_default_expanded: false,
+            window_width: 560.0,
+            window_height: 700.0,
+            active_engine: TtsEngineType::Voicevox,
+            voiceger_url: "http://localhost:9880".to_string(),
+            voiceger_path: String::new(),
+            voiceger_ref_audio: String::new(),
+            voiceger_prompt_text: String::new(),
+            voiceger_prompt_lang: "ja".to_string(),
+            voiceger_dict: std::collections::HashMap::new(), // per-lang dicts initialized on demand
         }
     }
 }
 
 impl AppConfig {
+    /// Default Voiceger install directory (~/voiceger_v2, matching install.sh).
+    pub fn default_voiceger_install_dir() -> PathBuf {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("voiceger_v2")
+    }
+
+    /// Build the default launch command from the standard install.sh layout.
+    /// Uses `conda run` if conda is found, otherwise falls back to plain python.
+    pub fn default_voiceger_launch_cmd() -> String {
+        let api_py = Self::default_voiceger_install_dir()
+            .join("GPT-SoVITS")
+            .join("api_v2.py");
+
+        // Look for conda in common locations
+        let home = std::env::var("HOME").unwrap_or_default();
+        let miniconda = format!("{home}/miniconda3/bin/conda");
+        let anaconda = format!("{home}/anaconda3/bin/conda");
+        let conda_candidates = ["conda", miniconda.as_str(), anaconda.as_str()];
+        for candidate in &conda_candidates {
+            if std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return format!(
+                    "{} run -n voiceger --no-capture-output python {}",
+                    candidate,
+                    api_py.display()
+                );
+            }
+        }
+
+        // Fallback: plain python in PATH
+        format!("python {}", api_py.display())
+    }
+
+    /// The effective launch command: user-set value, or the computed default.
+    pub fn effective_voiceger_launch_cmd(&self) -> String {
+        if self.voiceger_path.trim().is_empty() {
+            Self::default_voiceger_launch_cmd()
+        } else {
+            self.voiceger_path.clone()
+        }
+    }
+
+    /// Derive the Voiceger repository root from voiceger_path.
+    /// e.g. "python /home/user/voiceger_v2/api.py" → "/home/user/voiceger_v2"
+    /// Falls back to the default install directory when voiceger_path is empty.
+    pub fn voiceger_base_dir(&self) -> Option<PathBuf> {
+        if self.voiceger_path.trim().is_empty() {
+            let dir = Self::default_voiceger_install_dir();
+            return if dir.exists() { Some(dir) } else { None };
+        }
+        let words = shell_words::split(self.voiceger_path.trim()).ok()?;
+        // Find the first word that looks like a file path (contains '/' or ends in .py)
+        let script = words
+            .iter()
+            .find(|w| w.contains('/') || w.ends_with(".py"))?;
+        let parent = PathBuf::from(script).parent().map(|p| p.to_path_buf())?;
+        // api_v2.py is inside GPT-SoVITS/, so the repo root is one level up
+        parent.parent().map(|p| p.to_path_buf()).or(Some(parent))
+    }
+
+    /// Default ref audio path derived from voiceger_path.
+    pub fn default_voiceger_ref_audio(&self) -> String {
+        self.voiceger_base_dir()
+            .map(|d| {
+                d.join("reference")
+                    .join("01_ref_emoNormal026.wav")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .unwrap_or_default()
+    }
+
+    pub const DEFAULT_VOICEGER_PROMPT_LANG: &'static str = "ja";
+
+    /// Read prompt text from ref_text.txt in the reference folder, falling back to the known default.
+    pub fn default_voiceger_prompt_text(&self) -> String {
+        if let Some(base) = self.voiceger_base_dir() {
+            let path = base.join("reference").join("ref_text.txt");
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let trimmed = text.trim().to_string();
+                if !trimmed.is_empty() {
+                    return trimmed;
+                }
+            }
+        }
+        // All _026.wav reference files contain JSUT dataset utterance #026
+        "私はいつもミネラルウォーターを持ち歩いています".to_string()
+    }
+
+    /// Apply all Voiceger defaults derived from voiceger_path.
+    pub fn reset_voiceger_defaults(&mut self) {
+        self.voiceger_ref_audio = self.default_voiceger_ref_audio();
+        self.voiceger_prompt_text = self.default_voiceger_prompt_text();
+        self.voiceger_prompt_lang = Self::DEFAULT_VOICEGER_PROMPT_LANG.to_string();
+    }
+
     pub fn default_presets() -> Vec<SpeakerPreset> {
         vec![
             SpeakerPreset {
                 name: "デフォルト：ずんだもん".to_string(),
                 speaker_id: 3,
                 synth_params: SynthParamsConfig::default(),
+                engine: TtsEngineType::Voicevox,
             },
             SpeakerPreset {
                 name: "デフォルト：めたん".to_string(),
                 speaker_id: 2,
                 synth_params: SynthParamsConfig::default(),
+                engine: TtsEngineType::Voicevox,
             },
             SpeakerPreset {
                 name: "デフォルト：つむぎ".to_string(),
                 speaker_id: 8,
                 synth_params: SynthParamsConfig::default(),
+                engine: TtsEngineType::Voicevox,
+            },
+            SpeakerPreset {
+                name: "Voiceger：日本語".to_string(),
+                speaker_id: 0,
+                synth_params: SynthParamsConfig::default(),
+                engine: TtsEngineType::Voiceger,
+            },
+            SpeakerPreset {
+                name: "Voiceger：English".to_string(),
+                speaker_id: 1,
+                synth_params: SynthParamsConfig::default(),
+                engine: TtsEngineType::Voiceger,
+            },
+            SpeakerPreset {
+                name: "Voiceger：中文".to_string(),
+                speaker_id: 2,
+                synth_params: SynthParamsConfig::default(),
+                engine: TtsEngineType::Voiceger,
+            },
+            SpeakerPreset {
+                name: "Voiceger：한국어".to_string(),
+                speaker_id: 3,
+                synth_params: SynthParamsConfig::default(),
+                engine: TtsEngineType::Voiceger,
+            },
+            SpeakerPreset {
+                name: "Voiceger：粤語".to_string(),
+                speaker_id: 4,
+                synth_params: SynthParamsConfig::default(),
+                engine: TtsEngineType::Voiceger,
             },
         ]
     }

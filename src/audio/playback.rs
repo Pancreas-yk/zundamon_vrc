@@ -25,36 +25,73 @@ pub fn play_wav(
         });
     }
 
+    tracing::info!("play_wav: {} bytes → device={:?}", wav_data.len(), device_name);
     match play_with_rodio_cancellable(&wav_data, device_name, &cancel) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            tracing::info!("play_wav: rodio OK");
+            Ok(())
+        }
         Err(e) => {
             if cancel.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(());
             }
             tracing::warn!("rodio playback failed ({}), falling back to paplay", e);
-            play_with_paplay(&wav_data, device_name, &cancel)
+            let result = play_with_paplay(&wav_data, device_name, &cancel);
+            if let Err(ref pe) = result {
+                tracing::error!("paplay fallback also failed: {}", pe);
+            } else {
+                tracing::info!("play_wav: paplay OK");
+            }
+            result
         }
     }
 }
 
 /// Play WAV data on the default output device with cancel support.
+/// Uses paplay (no --device) so it hits the real speakers even when rodio
+/// can't enumerate devices due to ALSA/Jack errors.
 fn play_on_default_output_cancellable(
     wav_data: &[u8],
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<()> {
-    let (_stream, handle) = OutputStream::try_default().context("Failed to open default output")?;
-    let sink = Sink::try_new(&handle).context("Failed to create sink for monitor")?;
-    let cursor = Cursor::new(wav_data.to_vec());
-    let source = rodio::Decoder::new(cursor).context("Failed to decode WAV for monitor")?;
-    sink.append(source);
-    while !sink.empty() {
+    use std::io::Write;
+
+    let tmp_path = std::env::temp_dir().join(format!(
+        "zundux_monitor_{}.wav",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+    ));
+    {
+        let mut f =
+            std::fs::File::create(&tmp_path).context("Failed to create monitor temp file")?;
+        f.write_all(wav_data)
+            .context("Failed to write monitor WAV")?;
+    }
+
+    let mut child = Command::new("paplay")
+        .arg(&tmp_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("Failed to spawn paplay for monitor")?;
+
+    loop {
         if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-            sink.stop();
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&tmp_path);
             return Ok(());
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        match child.try_wait().context("Failed to wait for monitor paplay")? {
+            Some(_) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Ok(());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
     }
-    Ok(())
 }
 
 fn play_with_rodio_cancellable(
@@ -236,54 +273,100 @@ fn play_with_paplay(
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<()> {
     use std::io::Write;
-    use std::process::Stdio;
 
-    let mut child = Command::new("paplay")
-        .args([
-            "--device",
-            device_name,
-            "--raw",
-            "--format=s16le",
-            "--rate=24000",
-            "--channels=1",
-        ])
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn paplay")?;
-
-    // Strip WAV header (44 bytes) to get raw PCM for paplay --raw
-    let pcm_data = if wav_data.len() > 44 && &wav_data[0..4] == b"RIFF" {
-        &wav_data[44..]
-    } else {
-        wav_data
-    };
-
-    if let Some(ref mut stdin) = child.stdin {
-        stdin
-            .write_all(pcm_data)
-            .context("Failed to write to paplay stdin")?;
+    // Write WAV to a temp file (paplay doesn't support stdin).
+    let tmp_path = std::env::temp_dir().join(format!(
+        "zundux_tts_{}.wav",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp_path).context("Failed to create temp WAV file")?;
+        f.write_all(wav_data)
+            .context("Failed to write WAV to temp file")?;
     }
-    drop(child.stdin.take());
 
-    // Poll for cancel while waiting for paplay to finish
-    loop {
-        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-            tracing::info!("TTS stop: killing paplay (pid {})", child.id());
-            let _ = child.kill(); // SIGKILL — more reliable than SIGTERM on PipeWire
-            let _ = child.wait();
-            return Ok(());
-        }
-        match child.try_wait().context("Failed to wait for paplay")? {
-            Some(status) => {
-                if !status.success() {
-                    if let Some(code) = status.code() {
-                        anyhow::bail!("paplay exited with status {}", code);
-                    }
+    // Use ffmpeg → paplay pipeline so any sample rate / format is normalised to
+    // 48kHz s16le before hitting the virtual sink.  This matches how play_file
+    // works and avoids PipeWire rejecting non-48kHz PCM on the null sink.
+    let ffmpeg = Command::new("ffmpeg")
+        .args(["-i"]).arg(&tmp_path)
+        .args(["-f", "s16le", "-acodec", "pcm_s16le",
+               "-ac", "1", "-ar", "48000", "-loglevel", "error", "pipe:1"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    match ffmpeg {
+        Ok(mut ffmpeg_proc) => {
+            let ffmpeg_stdout = ffmpeg_proc.stdout.take()
+                .context("Failed to get ffmpeg stdout")?;
+            let mut paplay = Command::new("paplay")
+                .args(["--device", device_name,
+                       "--raw", "--format=s16le", "--rate=48000", "--channels=1"])
+                .stdin(ffmpeg_stdout)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn paplay")?;
+
+            loop {
+                if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    tracing::info!("TTS stop: killing paplay+ffmpeg");
+                    let _ = paplay.kill();
+                    let _ = ffmpeg_proc.kill();
+                    let _ = paplay.wait();
+                    let _ = ffmpeg_proc.wait();
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Ok(());
                 }
-                return Ok(());
+                match paplay.try_wait().context("Failed to wait for paplay")? {
+                    Some(status) => {
+                        let _ = ffmpeg_proc.wait();
+                        let _ = std::fs::remove_file(&tmp_path);
+                        if !status.success() {
+                            if let Some(code) = status.code() {
+                                anyhow::bail!("paplay exited with status {}", code);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    None => std::thread::sleep(std::time::Duration::from_millis(50)),
+                }
             }
-            None => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Err(_) => {
+            // ffmpeg not available — fall back to direct paplay (original behaviour).
+            tracing::warn!("ffmpeg not found, using direct paplay (format mismatch possible)");
+            let mut child = Command::new("paplay")
+                .args(["--device", device_name])
+                .arg(&tmp_path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn paplay")?;
+
+            loop {
+                if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Ok(());
+                }
+                match child.try_wait().context("Failed to wait for paplay")? {
+                    Some(status) => {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        if !status.success() {
+                            if let Some(code) = status.code() {
+                                anyhow::bail!("paplay exited with status {}", code);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    None => std::thread::sleep(std::time::Duration::from_millis(50)),
+                }
             }
         }
     }

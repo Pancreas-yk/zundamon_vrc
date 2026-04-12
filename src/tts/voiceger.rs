@@ -213,8 +213,8 @@ impl TtsEngine for VoicegerEngine {
         if !ref_free {
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("ref_audio_path".to_string(), serde_json::json!(ref_audio));
-                obj.insert("prompt_text".to_string(), serde_json::json!(self.prompt_text));
-                obj.insert("prompt_lang".to_string(), serde_json::json!(self.prompt_lang));
+                obj.insert("prompt_text".to_string(), serde_json::json!(&self.prompt_text));
+                obj.insert("prompt_lang".to_string(), serde_json::json!(&self.prompt_lang));
             }
         }
 

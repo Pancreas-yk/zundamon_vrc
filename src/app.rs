@@ -486,19 +486,26 @@ impl ZunduxApp {
 
                 let params = active_preset
                     .map(|p| {
-                        // Resolve Voiceger emotion → ref audio path override.
-                        let aux_ref_audio = if p.engine == crate::config::TtsEngineType::Voiceger
-                            && !p.voiceger_emotion.is_empty()
-                        {
-                            crate::tts::voiceger::VOICEGER_EMOTIONS
-                                .iter()
-                                .find(|(name, _)| *name == p.voiceger_emotion)
-                                .and_then(|(_, filename)| {
-                                    // Derive reference directory from global voiceger_ref_audio.
-                                    let base = std::path::Path::new(&self.state.config.voiceger_ref_audio)
-                                        .parent()?;
-                                    Some(base.join(filename).to_string_lossy().into_owned())
-                                })
+                        // Voiceger ref override priority:
+                        // 1) per-preset custom WAV
+                        // 2) per-preset emotion WAV
+                        // 3) global voiceger_ref_audio (engine default)
+                        let aux_ref_audio = if p.engine == crate::config::TtsEngineType::Voiceger {
+                            if !p.voiceger_ref_audio_override.trim().is_empty() {
+                                Some(p.voiceger_ref_audio_override.trim().to_string())
+                            } else if !p.voiceger_emotion.is_empty() {
+                                crate::tts::voiceger::VOICEGER_EMOTIONS
+                                    .iter()
+                                    .find(|(name, _)| *name == p.voiceger_emotion)
+                                    .and_then(|(_, filename)| {
+                                        // Derive reference directory from global voiceger_ref_audio.
+                                        let base = std::path::Path::new(&self.state.config.voiceger_ref_audio)
+                                            .parent()?;
+                                        Some(base.join(filename).to_string_lossy().into_owned())
+                                    })
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         };

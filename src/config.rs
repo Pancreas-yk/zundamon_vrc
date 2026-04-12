@@ -67,6 +67,8 @@ pub struct AppConfig {
     pub voiceger_prompt_text: String,
     #[serde(default = "default_voiceger_prompt_lang")]
     pub voiceger_prompt_lang: String,
+    #[serde(default)]
+    pub voiceger_ref_free: bool,
     /// Per-language client-side text replacements applied before Voiceger synthesis.
     /// Outer key = language code (ja/en/zh/ko/yue), inner key = surface, value = reading.
     #[serde(default)]
@@ -173,6 +175,7 @@ impl Default for AppConfig {
             voiceger_ref_audio: String::new(),
             voiceger_prompt_text: String::new(),
             voiceger_prompt_lang: "ja".to_string(),
+            voiceger_ref_free: false,
             voiceger_dict: std::collections::HashMap::new(), // per-lang dicts initialized on demand
         }
     }

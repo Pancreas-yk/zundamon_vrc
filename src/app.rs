@@ -509,6 +509,7 @@ impl ZunduxApp {
                             intonation_scale: p.synth_params.intonation_scale,
                             volume_scale: p.synth_params.volume_scale,
                             aux_ref_audio,
+                            voiceger_ref_free: self.state.config.voiceger_ref_free,
                         }
                     })
                     .unwrap_or_else(|| SynthParams::from_config(&self.state.config));

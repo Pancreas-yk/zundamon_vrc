@@ -604,6 +604,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                         }
                     });
             });
+            ui.checkbox(
+                &mut state.config.voiceger_ref_free,
+                "参照なしモード (ref_free) を常時有効",
+            );
+            ui.label(
+                egui::RichText::new(
+                    "※ ON で参照音声/参照テキストを使わず合成します。短い英字入力（例: wa）はOFFでも自動で参照なしに切り替わります。",
+                )
+                .small()
+                .weak(),
+            );
             if !state.config.voiceger_prompt_text.is_empty() {
                 ui.label(
                     egui::RichText::new(format!(

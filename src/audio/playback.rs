@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use rodio::{OutputStream, Sink};
 use std::process::Command;
 
 /// Play WAV data to the virtual sink using paplay.
@@ -23,7 +22,11 @@ pub fn play_wav(
         });
     }
 
-    tracing::info!("play_wav: {} bytes → device={:?}", wav_data.len(), device_name);
+    tracing::info!(
+        "play_wav: {} bytes → device={:?}",
+        wav_data.len(),
+        device_name
+    );
     let result = play_with_paplay(&wav_data, device_name, &cancel);
     if let Err(ref pe) = result {
         tracing::error!("paplay playback failed: {}", pe);
@@ -34,8 +37,7 @@ pub fn play_wav(
 }
 
 /// Play WAV data on the default output device with cancel support.
-/// Uses paplay (no --device) so it hits the real speakers even when rodio
-/// can't enumerate devices due to ALSA/Jack errors.
+/// Uses paplay (no --device) so it hits the real speakers.
 fn play_on_default_output_cancellable(
     wav_data: &[u8],
     cancel: &std::sync::atomic::AtomicBool,
@@ -70,7 +72,10 @@ fn play_on_default_output_cancellable(
             let _ = std::fs::remove_file(&tmp_path);
             return Ok(());
         }
-        match child.try_wait().context("Failed to wait for monitor paplay")? {
+        match child
+            .try_wait()
+            .context("Failed to wait for monitor paplay")?
+        {
             Some(_) => {
                 let _ = std::fs::remove_file(&tmp_path);
                 return Ok(());
@@ -199,26 +204,104 @@ fn play_file_default_output(
     cancel: &std::sync::atomic::AtomicBool,
     gain_db: Option<f64>,
 ) -> Result<()> {
-    let (_stream, handle) = OutputStream::try_default().context("Failed to open default output")?;
-    let sink = Sink::try_new(&handle).context("Failed to create sink")?;
+    let mut ffmpeg_cmd = Command::new("ffmpeg");
+    ffmpeg_cmd.args(["-i"]).arg(path);
+
     if let Some(db) = gain_db {
-        // Convert dB to linear volume factor: 10^(dB/20)
-        let linear = 10.0_f64.powf(db / 20.0) as f32;
-        sink.set_volume(linear);
+        ffmpeg_cmd.args(["-af", &format!("volume={}dB", db)]);
     }
-    let file = std::fs::File::open(path).context("Failed to open audio file")?;
-    let source = rodio::Decoder::new(std::io::BufReader::new(file))
-        .context("Failed to decode audio file")?;
-    sink.append(source);
-    // Poll instead of sleep_until_end so we can respond to cancel
-    while !sink.empty() {
-        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-            sink.stop();
-            return Ok(());
+
+    ffmpeg_cmd.args([
+        "-f",
+        "s16le",
+        "-acodec",
+        "pcm_s16le",
+        "-ac",
+        "1",
+        "-ar",
+        "48000",
+        "-loglevel",
+        "error",
+        "pipe:1",
+    ]);
+
+    let ffmpeg = ffmpeg_cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    match ffmpeg {
+        Ok(mut ffmpeg_proc) => {
+            let ffmpeg_stdout = ffmpeg_proc
+                .stdout
+                .take()
+                .context("Failed to get ffmpeg stdout")?;
+            let mut paplay = Command::new("paplay")
+                .args(["--raw", "--format=s16le", "--rate=48000", "--channels=1"])
+                .stdin(ffmpeg_stdout)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn paplay for monitor")?;
+
+            loop {
+                if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = paplay.kill();
+                    let _ = ffmpeg_proc.kill();
+                    let _ = paplay.wait();
+                    let _ = ffmpeg_proc.wait();
+                    return Ok(());
+                }
+
+                match paplay
+                    .try_wait()
+                    .context("Failed to wait for monitor paplay")?
+                {
+                    Some(status) => {
+                        let _ = ffmpeg_proc.wait();
+                        if !status.success() {
+                            if let Some(code) = status.code() {
+                                anyhow::bail!("paplay exited with status {}", code);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    None => std::thread::sleep(std::time::Duration::from_millis(50)),
+                }
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        Err(_) => {
+            tracing::warn!("ffmpeg not found, using direct paplay for monitor");
+            let mut child = Command::new("paplay")
+                .arg(path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to spawn paplay for monitor")?;
+
+            loop {
+                if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(());
+                }
+                match child
+                    .try_wait()
+                    .context("Failed to wait for monitor paplay")?
+                {
+                    Some(status) => {
+                        if !status.success() {
+                            if let Some(code) = status.code() {
+                                anyhow::bail!("paplay exited with status {}", code);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    None => std::thread::sleep(std::time::Duration::from_millis(50)),
+                }
+            }
+        }
     }
-    Ok(())
 }
 
 fn play_with_paplay(
@@ -246,20 +329,40 @@ fn play_with_paplay(
     // 48kHz s16le before hitting the virtual sink.  This matches how play_file
     // works and avoids PipeWire rejecting non-48kHz PCM on the null sink.
     let ffmpeg = Command::new("ffmpeg")
-        .args(["-i"]).arg(&tmp_path)
-        .args(["-f", "s16le", "-acodec", "pcm_s16le",
-               "-ac", "1", "-ar", "48000", "-loglevel", "error", "pipe:1"])
+        .args(["-i"])
+        .arg(&tmp_path)
+        .args([
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "48000",
+            "-loglevel",
+            "error",
+            "pipe:1",
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn();
 
     match ffmpeg {
         Ok(mut ffmpeg_proc) => {
-            let ffmpeg_stdout = ffmpeg_proc.stdout.take()
+            let ffmpeg_stdout = ffmpeg_proc
+                .stdout
+                .take()
                 .context("Failed to get ffmpeg stdout")?;
             let mut paplay = Command::new("paplay")
-                .args(["--device", device_name,
-                       "--raw", "--format=s16le", "--rate=48000", "--channels=1"])
+                .args([
+                    "--device",
+                    device_name,
+                    "--raw",
+                    "--format=s16le",
+                    "--rate=48000",
+                    "--channels=1",
+                ])
                 .stdin(ffmpeg_stdout)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())

@@ -9,14 +9,14 @@ use super::TtsEngine;
 
 /// (display_name, filename) — reference audio files in the `reference/` directory.
 pub const VOICEGER_EMOTIONS: &[(&str, &str)] = &[
-    ("ノーマル",  "01_ref_emoNormal026.wav"),
-    ("甘え",     "02_ref_emoAma026.wav"),
-    ("ツン",     "03_ref_emoTsun026.wav"),
+    ("ノーマル", "01_ref_emoNormal026.wav"),
+    ("甘え", "02_ref_emoAma026.wav"),
+    ("ツン", "03_ref_emoTsun026.wav"),
     ("セクシー", "04_ref_emoSexy026.wav"),
-    ("さっさ",   "05_ref_emoSasa026.wav"),
+    ("さっさ", "05_ref_emoSasa026.wav"),
     ("ぼそぼそ", "06_ref_emoMurmur026.wav"),
     ("ヒーロー", "07_ref_emoHero026.wav"),
-    ("泣き",     "08_ref_emoSobbing026.wav"),
+    ("泣き", "08_ref_emoSobbing026.wav"),
 ];
 
 /// (lang_code, display_name, style_id)
@@ -43,12 +43,7 @@ pub struct VoicegerEngine {
 }
 
 impl VoicegerEngine {
-    pub fn new(
-        base_url: &str,
-        ref_audio_path: &str,
-        prompt_text: &str,
-        prompt_lang: &str,
-    ) -> Self {
+    pub fn new(base_url: &str, ref_audio_path: &str, prompt_text: &str, prompt_lang: &str) -> Self {
         // Auto-detect Zundamon model weights relative to ref_audio_path.
         let base_dir = std::path::Path::new(ref_audio_path)
             .parent()
@@ -130,7 +125,8 @@ impl VoicegerEngine {
         let filter_str = filters.join(",");
 
         let status = Command::new("ffmpeg")
-            .args(["-y", "-i"]).arg(&tmp_in)
+            .args(["-y", "-i"])
+            .arg(&tmp_in)
             .args(["-af", &filter_str, "-loglevel", "error"])
             .arg(&tmp_out)
             .status()
@@ -158,6 +154,7 @@ impl VoicegerEngine {
     }
 
     /// Very short ASCII-only input tends to echo/bleed reference speech in some GPT-SoVITS setups.
+    /// Very short Japanese snippets can also be unstable with reference mode.
     /// Use ref-free mode for those cases.
     fn should_auto_ref_free(text: &str) -> bool {
         let t = text.trim();
@@ -172,7 +169,48 @@ impl VoicegerEngine {
                 || c.is_ascii_whitespace()
                 || matches!(c, '-' | '_' | '.' | ',' | '!' | '?')
         });
-        ascii_only && ascii_alpha_count > 0 && ascii_alpha_count <= 3
+        if ascii_only && ascii_alpha_count > 0 && ascii_alpha_count <= 3 {
+            return true;
+        }
+
+        // Short Japanese fragments (e.g. 「いいかな？」) are often more stable without reference audio.
+        // Count only meaningful chars (ignore spaces and punctuation).
+        let mut jp_core_len = 0usize;
+        let mut has_japanese = false;
+        for c in t.chars() {
+            if c.is_whitespace()
+                || matches!(
+                    c,
+                    '。' | '、'
+                        | '！'
+                        | '？'
+                        | '…'
+                        | 'ー'
+                        | '〜'
+                        | '～'
+                        | '・'
+                        | '「'
+                        | '」'
+                        | '『'
+                        | '』'
+                        | '（'
+                        | '）'
+                        | '('
+                        | ')'
+                        | '.'
+                        | ','
+                        | '!'
+                        | '?'
+                )
+            {
+                continue;
+            }
+            let is_japanese = matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}');
+            has_japanese |= is_japanese;
+            jp_core_len += 1;
+        }
+
+        has_japanese && jp_core_len > 0 && jp_core_len <= 8
     }
 }
 
@@ -201,7 +239,10 @@ impl TtsEngine for VoicegerEngine {
         // Higher intonation = higher temperature = more expressive generation.
         let temperature = (0.5 + params.intonation_scale * 0.5).clamp(0.1, 2.0);
 
-        let ref_audio = params.aux_ref_audio.as_deref().unwrap_or(&self.ref_audio_path);
+        let ref_audio = params
+            .aux_ref_audio
+            .as_deref()
+            .unwrap_or(&self.ref_audio_path);
         let ref_free = params.voiceger_ref_free || Self::should_auto_ref_free(text);
 
         let url = format!("{}/tts", self.base_url);
@@ -217,8 +258,14 @@ impl TtsEngine for VoicegerEngine {
         if !ref_free {
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("ref_audio_path".to_string(), serde_json::json!(ref_audio));
-                obj.insert("prompt_text".to_string(), serde_json::json!(&self.prompt_text));
-                obj.insert("prompt_lang".to_string(), serde_json::json!(&self.prompt_lang));
+                obj.insert(
+                    "prompt_text".to_string(),
+                    serde_json::json!(&self.prompt_text),
+                );
+                obj.insert(
+                    "prompt_lang".to_string(),
+                    serde_json::json!(&self.prompt_lang),
+                );
             }
         }
 
@@ -247,7 +294,11 @@ impl TtsEngine for VoicegerEngine {
                 let msg = v["message"].as_str().unwrap_or("unknown error");
                 if let Some(exc) = v["Exception"].as_str() {
                     // Show last non-empty line of traceback (most informative part).
-                    let last = exc.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(exc);
+                    let last = exc
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or(exc);
                     tracing::error!("Voiceger {} exception:\n{}", status, exc);
                     format!("{}: {}", msg, last.trim())
                 } else {
@@ -270,12 +321,15 @@ impl TtsEngine for VoicegerEngine {
         // pitch_scale: VOICEVOX range -0.15..0.15 → treat as semitone fraction
         //   (multiply by 12 to get semitones, e.g. 0.15 → ~1.8 semitones)
         // volume_scale: 1.0 = unity gain
-        let needs_pitch  = (params.pitch_scale  - 0.0).abs() > 1e-4;
+        let needs_pitch = (params.pitch_scale - 0.0).abs() > 1e-4;
         let needs_volume = (params.volume_scale - 1.0).abs() > 1e-4;
         if needs_pitch || needs_volume {
             match Self::ffmpeg_adjust(&wav, params.pitch_scale, params.volume_scale) {
                 Ok(adjusted) => return Ok(adjusted),
-                Err(e) => tracing::warn!("ffmpeg pitch/volume adjustment failed ({}), using raw audio", e),
+                Err(e) => tracing::warn!(
+                    "ffmpeg pitch/volume adjustment failed ({}), using raw audio",
+                    e
+                ),
             }
         }
 
@@ -348,7 +402,15 @@ mod tests {
         assert!(VoicegerEngine::should_auto_ref_free("wa"));
         assert!(VoicegerEngine::should_auto_ref_free("ok!"));
         assert!(!VoicegerEngine::should_auto_ref_free("hello"));
-        assert!(!VoicegerEngine::should_auto_ref_free("こんにちは"));
         assert!(!VoicegerEngine::should_auto_ref_free(""));
+    }
+
+    #[test]
+    fn should_auto_ref_free_for_short_japanese_snippets() {
+        assert!(VoicegerEngine::should_auto_ref_free("いいかな？"));
+        assert!(VoicegerEngine::should_auto_ref_free("ねえ、どう？"));
+        assert!(!VoicegerEngine::should_auto_ref_free(
+            "これは短文ではないので通常モードで読む"
+        ));
     }
 }

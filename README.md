@@ -251,4 +251,36 @@ sudo pacman -S noto-fonts-cjk
 
 ## ライセンス
 
-VOICEVOX・Voiceger の音声を使用する際はそれぞれの利用規約に従ってください。各音声キャラクターにも個別の利用規約があります。
+このソフトウェアは [MIT License](LICENSE) のもとで公開されています。
+
+VOICEVOX・Voiceger で生成した音声を使用する際は、それぞれの利用規約に従ってください。各音声キャラクターにも個別の利用規約があります。
+
+## クレジット
+
+このアプリは以下のソフトウェア・モデルを使用しています。
+
+### TTS エンジン
+
+| ソフトウェア | 開発者 | ライセンス |
+|---|---|---|
+| [VOICEVOX Engine](https://github.com/VOICEVOX/voicevox_engine) | Hiroshiba / AHS | LGPL-3.0 |
+| [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) | RVC-Boss | MIT |
+
+### モデル・音声データ
+
+| モデル | 配布元 |
+|---|---|
+| ずんだもん GPT-SoVITS モデル | [zunzunpj/zundamon_GPT-SoVITS](https://huggingface.co/zunzunpj/zundamon_GPT-SoVITS) |
+| GPT-SoVITS 事前学習モデル | [lj1995/GPT-SoVITS](https://huggingface.co/lj1995/GPT-SoVITS) |
+| G2PWModel | [alextomcat/G2PWModel](https://huggingface.co/alextomcat/G2PWModel) |
+
+ずんだもんの音声・キャラクターは [VOICEVOX:ずんだもん](https://voicevox.hiroshiba.jp/) の利用規約に従って使用してください。
+
+### Rust クレート（主要なもの）
+
+| クレート | 用途 |
+|---|---|
+| [egui / eframe](https://github.com/emilk/egui) | GUI フレームワーク |
+| [tokio](https://github.com/tokio-rs/tokio) | 非同期ランタイム |
+| [reqwest](https://github.com/seanmonstar/reqwest) | HTTP クライアント |
+| [rosc](https://github.com/klingtnet/rosc) | OSC プロトコル |

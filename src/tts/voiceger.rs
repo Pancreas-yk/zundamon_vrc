@@ -270,30 +270,33 @@ impl TtsEngine for VoicegerEngine {
             || Self::should_auto_ref_free_in_text(text);
 
         let url = format!("{}/tts", self.base_url);
-        let mut body = serde_json::json!({
+        // api_v2.py requires ref_audio_path and prompt_lang unconditionally.
+        // ref_free mode is emulated by sending an empty prompt_text: TTS.py sets
+        // no_prompt_text=True when prompt_text is empty, skipping reference audio
+        // conditioning while still accepting the path for audio feature extraction.
+        let effective_ref_audio = if ref_audio_available {
+            ref_audio.to_string()
+        } else {
+            // Fallback: send the configured path even if empty; server will error
+            // with a clearer message than a missing-field 400.
+            self.ref_audio_path.clone()
+        };
+        let prompt_text_to_send = if ref_free {
+            String::new()
+        } else {
+            self.prompt_text.clone()
+        };
+        let body = serde_json::json!({
             "text": text,
             "text_lang": text_lang,
+            "ref_audio_path": effective_ref_audio,
+            "prompt_text": prompt_text_to_send,
+            "prompt_lang": &self.prompt_lang,
             "speed_factor": params.speed_scale,
             "temperature": temperature,
             "streaming_mode": false,
             "media_type": "wav",
-            "ref_free": ref_free,
         });
-        // Only include reference metadata when ref_free is false AND a valid path exists.
-        // The server ignores ref_free=true when ref fields are present, so we must omit them.
-        if !ref_free && ref_audio_available {
-            if let Some(obj) = body.as_object_mut() {
-                obj.insert("ref_audio_path".to_string(), serde_json::json!(ref_audio));
-                obj.insert(
-                    "prompt_text".to_string(),
-                    serde_json::json!(&self.prompt_text),
-                );
-                obj.insert(
-                    "prompt_lang".to_string(),
-                    serde_json::json!(&self.prompt_lang),
-                );
-            }
-        }
 
         tracing::info!(
             "Voiceger synthesize: text={:?} lang={} temp={:.2} ref={} ref_free={}",

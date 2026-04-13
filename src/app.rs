@@ -77,6 +77,7 @@ pub struct AppState {
     pub pending_restart_voicevox: bool,
     pub pending_restart_voiceger: bool,
     pub voicevox_launching: bool,
+    pub voiceger_launching: bool,
     pub current_screen: Screen,
     pub new_template_text: String,
     pub user_dict: Vec<(String, String, String)>, // (uuid, surface, pronunciation)
@@ -205,6 +206,7 @@ impl ZunduxApp {
                 pending_restart_voicevox: false,
                 pending_restart_voiceger: false,
                 voicevox_launching: false,
+                voiceger_launching: false,
                 current_screen: Screen::Input,
                 new_template_text: String::new(),
                 user_dict: Vec::new(),
@@ -408,7 +410,7 @@ impl ZunduxApp {
                 UiMessage::VoicegerHealthCheckResult(ok) => {
                     self.state.voiceger_connected = ok;
                     if ok {
-                        self.state.voicevox_launching = false;
+                        self.state.voiceger_launching = false;
                     }
                 }
                 UiMessage::Error(err) => {
@@ -434,7 +436,7 @@ impl ZunduxApp {
     }
 
     fn periodic_health_check(&mut self) {
-        let interval = if self.state.voicevox_launching {
+        let interval = if self.state.voicevox_launching || self.state.voiceger_launching {
             HEALTH_CHECK_INTERVAL_LAUNCHING_SECS
         } else {
             HEALTH_CHECK_INTERVAL_SECS
@@ -581,7 +583,7 @@ impl ZunduxApp {
                 let _ = proc.kill();
             }
             self.state.voiceger_connected = false;
-            self.state.voicevox_launching = false;
+            self.state.voiceger_launching = false;
             self.launch_voiceger();
         }
 
@@ -1153,7 +1155,7 @@ impl ZunduxApp {
             Ok(child) => {
                 self.voiceger_process = Some(child);
                 self.state.last_error = None;
-                self.state.voicevox_launching = true;
+                self.state.voiceger_launching = true;
                 tracing::info!("Voiceger process spawned");
             }
             Err(e) => {
@@ -1448,9 +1450,17 @@ impl eframe::App for ZunduxApp {
                         crate::config::TtsEngineType::Voicevox => "VOICEVOX",
                         crate::config::TtsEngineType::Voiceger => "Voiceger",
                     };
-                    let (vox_color, vox_text) = if self.state.voicevox_connected {
+                    let (connected, launching) = match self.state.config.active_engine {
+                        crate::config::TtsEngineType::Voicevox => {
+                            (self.state.voicevox_connected, self.state.voicevox_launching)
+                        }
+                        crate::config::TtsEngineType::Voiceger => {
+                            (self.state.voiceger_connected, self.state.voiceger_launching)
+                        }
+                    };
+                    let (vox_color, vox_text) = if connected {
                         (theme.color(theme.status_ok), engine_name)
-                    } else if self.state.voicevox_launching {
+                    } else if launching {
                         (theme.color(theme.status_warn), engine_name)
                     } else {
                         (theme.color(theme.status_error), engine_name)

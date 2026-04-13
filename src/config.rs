@@ -243,10 +243,12 @@ impl AppConfig {
             return if dir.exists() { Some(dir) } else { None };
         }
         let words = shell_words::split(self.voiceger_path.trim()).ok()?;
-        // Find the first word that looks like a file path (contains '/' or ends in .py)
+        // Prefer a .py script argument over any other path-like word.
+        // e.g. "python /path/to/api_v2.py" → pick api_v2.py, not the python binary.
         let script = words
             .iter()
-            .find(|w| w.contains('/') || w.ends_with(".py"))?;
+            .find(|w| w.ends_with(".py"))
+            .or_else(|| words.iter().find(|w| w.contains('/')))?;
         let parent = PathBuf::from(script).parent().map(|p| p.to_path_buf())?;
         // api_v2.py is inside GPT-SoVITS/, so the repo root is one level up
         parent.parent().map(|p| p.to_path_buf()).or(Some(parent))

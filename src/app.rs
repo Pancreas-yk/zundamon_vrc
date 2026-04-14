@@ -125,6 +125,10 @@ pub struct AppState {
     pub preset_edit_buf: Option<crate::config::SpeakerPreset>,
     /// Currently selected language in the Voiceger dictionary editor.
     pub voiceger_dict_lang: String,
+    /// True when auto_launch_voiceger is enabled and we haven't yet received
+    /// the first health check result. We defer the actual spawn until we know
+    /// the server is not already running, to avoid "address already in use".
+    pub voiceger_auto_launch_pending: bool,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundux-voicevox";
@@ -214,7 +218,7 @@ impl ZunduxApp {
                 pending_create_device: false,
                 pending_destroy_device: false,
                 pending_launch_voicevox: auto_launch_voicevox,
-                pending_launch_voiceger: auto_launch_voiceger,
+                pending_launch_voiceger: false,
                 pending_restart_voicevox: false,
                 pending_restart_voiceger: false,
                 voicevox_launching: false,
@@ -258,6 +262,7 @@ impl ZunduxApp {
                 preset_adding: false,
                 preset_edit_buf: None,
                 voiceger_dict_lang: "ja".to_string(),
+                voiceger_auto_launch_pending: auto_launch_voiceger,
             },
             audio_manager,
             ui_rx,
@@ -437,6 +442,14 @@ impl ZunduxApp {
                     self.state.voiceger_connected = ok;
                     if ok {
                         self.state.voiceger_launching = false;
+                        // Server already running — cancel any pending auto-launch
+                        // so we don't spawn a second instance (→ address already in use).
+                        self.state.voiceger_auto_launch_pending = false;
+                    } else if self.state.voiceger_auto_launch_pending {
+                        // First health check came back negative: server not running.
+                        // Now it's safe to start it.
+                        self.state.voiceger_auto_launch_pending = false;
+                        self.state.pending_launch_voiceger = true;
                     }
                 }
                 UiMessage::GenericHealthCheckResult(ok) => {

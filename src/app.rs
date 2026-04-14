@@ -29,6 +29,8 @@ enum UiMessage {
     SpeakersLoaded(Vec<Speaker>),
     HealthCheckResult(bool),
     VoicegerHealthCheckResult(bool),
+    GenericHealthCheckResult(bool),
+    GenericSpeakersLoaded(Vec<Speaker>),
     Error(String),
     UserDictLoaded(crate::tts::types::UserDict),
     UserDictUpdated,
@@ -47,6 +49,8 @@ pub enum TtsCommand {
     LoadSpeakers,
     HealthCheck,
     HealthCheckVoiceger,
+    HealthCheckGeneric,
+    LoadGenericSpeakers,
     LoadUserDict,
     AddUserDictWord {
         surface: String,
@@ -64,6 +68,8 @@ pub struct AppState {
     pub speakers: Vec<Speaker>,
     pub voicevox_connected: bool,
     pub voiceger_connected: bool,
+    pub generic_connected: bool,
+    pub generic_speakers: Vec<Speaker>,
     pub device_ready: bool,
     pub is_synthesizing: bool,
     pub is_playing: bool,
@@ -170,6 +176,7 @@ impl ZunduxApp {
         let voiceger_ref_audio = config.voiceger_ref_audio.clone();
         let voiceger_prompt_text = config.voiceger_prompt_text.clone();
         let voiceger_prompt_lang = config.voiceger_prompt_lang.clone();
+        let generic_url = config.generic_url.clone();
         rt.spawn(Self::tts_loop(
             tts_manager,
             voicevox_url,
@@ -177,6 +184,7 @@ impl ZunduxApp {
             voiceger_ref_audio,
             voiceger_prompt_text,
             voiceger_prompt_lang,
+            generic_url,
             tts_rx,
             ui_tx,
         ));
@@ -184,7 +192,9 @@ impl ZunduxApp {
         // Trigger initial health check + speaker load
         let _ = tts_tx.send(TtsCommand::HealthCheck);
         let _ = tts_tx.send(TtsCommand::HealthCheckVoiceger);
+        let _ = tts_tx.send(TtsCommand::HealthCheckGeneric);
         let _ = tts_tx.send(TtsCommand::LoadSpeakers);
+        let _ = tts_tx.send(TtsCommand::LoadGenericSpeakers);
 
         Self {
             state: AppState {
@@ -193,6 +203,8 @@ impl ZunduxApp {
                 speakers: Vec::new(),
                 voicevox_connected: false,
                 voiceger_connected: false,
+                generic_connected: false,
+                generic_speakers: Vec::new(),
                 device_ready,
                 is_synthesizing: false,
                 is_playing: false,
@@ -273,12 +285,15 @@ impl ZunduxApp {
         voiceger_ref_audio: String,
         voiceger_prompt_text: String,
         voiceger_prompt_lang: String,
+        generic_url: String,
         rx: mpsc::Receiver<TtsCommand>,
         tx: mpsc::Sender<UiMessage>,
     ) {
         use crate::config::TtsEngineType;
+        use crate::tts::generic::GenericEngine;
         use crate::tts::voiceger::VoicegerEngine;
         let dict_engine = VoicevoxEngine::new(&voicevox_url);
+        let generic_engine = GenericEngine::new(&generic_url);
         let voiceger_engine = VoicegerEngine::new(
             &voiceger_url,
             &voiceger_ref_audio,
@@ -293,6 +308,7 @@ impl ZunduxApp {
                     let result = match engine {
                         TtsEngineType::Voicevox => tts.synthesize(&text, &params).await,
                         TtsEngineType::Voiceger => voiceger_engine.synthesize(&text, &params).await,
+                        TtsEngineType::Generic => generic_engine.synthesize(&text, &params).await,
                     };
                     match result {
                         Ok(wav) => {
@@ -323,6 +339,16 @@ impl ZunduxApp {
                     let ok = voiceger_engine.health_check().await.unwrap_or(false);
                     let _ = tx.send(UiMessage::VoicegerHealthCheckResult(ok));
                 }
+                TtsCommand::HealthCheckGeneric => {
+                    let ok = generic_engine.health_check().await.unwrap_or(false);
+                    let _ = tx.send(UiMessage::GenericHealthCheckResult(ok));
+                }
+                TtsCommand::LoadGenericSpeakers => match generic_engine.list_speakers().await {
+                    Ok(speakers) => {
+                        let _ = tx.send(UiMessage::GenericSpeakersLoaded(speakers));
+                    }
+                    Err(_) => {} // エンジンが起動していない場合は無視
+                },
                 TtsCommand::LoadUserDict => match dict_engine.list_user_dict().await {
                     Ok(dict) => {
                         let _ = tx.send(UiMessage::UserDictLoaded(dict));
@@ -413,6 +439,16 @@ impl ZunduxApp {
                         self.state.voiceger_launching = false;
                     }
                 }
+                UiMessage::GenericHealthCheckResult(ok) => {
+                    let was_disconnected = !self.state.generic_connected;
+                    self.state.generic_connected = ok;
+                    if ok && was_disconnected {
+                        let _ = self.tts_tx.send(TtsCommand::LoadGenericSpeakers);
+                    }
+                }
+                UiMessage::GenericSpeakersLoaded(speakers) => {
+                    self.state.generic_speakers = speakers;
+                }
                 UiMessage::Error(err) => {
                     self.state.is_synthesizing = false;
                     self.state.last_error = Some(err);
@@ -445,6 +481,7 @@ impl ZunduxApp {
             self.last_health_check = Instant::now();
             let _ = self.tts_tx.send(TtsCommand::HealthCheck);
             let _ = self.tts_tx.send(TtsCommand::HealthCheckVoiceger);
+            let _ = self.tts_tx.send(TtsCommand::HealthCheckGeneric);
         }
     }
 
@@ -1449,6 +1486,9 @@ impl eframe::App for ZunduxApp {
                     let engine_name = match self.state.config.active_engine {
                         crate::config::TtsEngineType::Voicevox => "VOICEVOX",
                         crate::config::TtsEngineType::Voiceger => "Voiceger",
+                        crate::config::TtsEngineType::Generic => {
+                            self.state.config.generic_engine_name.as_str()
+                        }
                     };
                     let (connected, launching) = match self.state.config.active_engine {
                         crate::config::TtsEngineType::Voicevox => {
@@ -1456,6 +1496,9 @@ impl eframe::App for ZunduxApp {
                         }
                         crate::config::TtsEngineType::Voiceger => {
                             (self.state.voiceger_connected, self.state.voiceger_launching)
+                        }
+                        crate::config::TtsEngineType::Generic => {
+                            (self.state.generic_connected, false)
                         }
                     };
                     let (vox_color, vox_text) = if connected {

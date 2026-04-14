@@ -11,6 +11,7 @@ pub enum TtsEngineType {
     #[default]
     Voicevox,
     Voiceger,
+    Generic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +74,12 @@ pub struct AppConfig {
     /// Outer key = language code (ja/en/zh/ko/yue), inner key = surface, value = reading.
     #[serde(default)]
     pub voiceger_dict: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    /// VOICEVOX互換の汎用エンジンのURL。
+    #[serde(default = "default_generic_url")]
+    pub generic_url: String,
+    /// 設定画面・ステータスバーに表示するエンジン名（例: "selfvox"）。
+    #[serde(default = "default_generic_engine_name")]
+    pub generic_engine_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +129,14 @@ fn default_voiceger_url() -> String {
 
 fn default_voiceger_prompt_lang() -> String {
     "ja".to_string()
+}
+
+fn default_generic_url() -> String {
+    "http://localhost:10101".to_string()
+}
+
+fn default_generic_engine_name() -> String {
+    "その他".to_string()
 }
 
 impl Default for SynthParamsConfig {
@@ -181,6 +196,8 @@ impl Default for AppConfig {
             voiceger_prompt_lang: "ja".to_string(),
             voiceger_ref_free: false,
             voiceger_dict: std::collections::HashMap::new(), // per-lang dicts initialized on demand
+            generic_url: default_generic_url(),
+            generic_engine_name: default_generic_engine_name(),
         }
     }
 }

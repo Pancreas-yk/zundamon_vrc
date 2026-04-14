@@ -1,3 +1,4 @@
+pub mod generic;
 pub mod types;
 pub mod voiceger;
 pub mod voicevox;

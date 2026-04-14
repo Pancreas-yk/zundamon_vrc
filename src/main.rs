@@ -8,6 +8,7 @@ mod ui;
 mod validation;
 
 use config::{AppConfig, TtsEngineType};
+use tts::generic::GenericEngine;
 use tts::voiceger::VoicegerEngine;
 use tts::voicevox::VoicevoxEngine;
 use tts::TtsManager;
@@ -126,6 +127,7 @@ fn main() -> eframe::Result<()> {
             &config.voiceger_prompt_text,
             &config.voiceger_prompt_lang,
         )),
+        TtsEngineType::Generic => Box::new(GenericEngine::new(&config.generic_url)),
     };
     let tts_manager = TtsManager::new(engine);
 

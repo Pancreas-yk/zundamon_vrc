@@ -14,7 +14,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     // -- Preset chips (grouped by engine) --
     let chip_rounding = CornerRadius::same(theme.chip_rounding as u8);
     let active_engine = state.config.active_engine.clone();
-    for engine_group in [TtsEngineType::Voicevox, TtsEngineType::Voiceger] {
+    for engine_group in [TtsEngineType::Voicevox, TtsEngineType::Voiceger, TtsEngineType::Generic] {
         // Only show presets for the currently active engine
         if engine_group != active_engine {
             continue;
@@ -28,6 +28,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         let label = match engine_group {
             TtsEngineType::Voicevox => "VOICEVOX",
             TtsEngineType::Voiceger => "Voiceger",
+            TtsEngineType::Generic => state.config.generic_engine_name.as_str(),
         };
         ui.label(
             egui::RichText::new(label)

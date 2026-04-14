@@ -19,7 +19,10 @@ fn show_preset_section(ui: &mut egui::Ui, state: &mut AppState, engine_group: &T
     let mut cancel_clicked = false;
 
     if editing_this {
-        let speakers_snapshot = state.speakers.clone();
+        let speakers_snapshot = match engine_group {
+            TtsEngineType::Generic => state.generic_speakers.clone(),
+            _ => state.speakers.clone(),
+        };
         if let Some(buf) = state.preset_edit_buf.as_mut() {
             ui.horizontal(|ui| {
                 ui.label("名前:");
@@ -33,6 +36,7 @@ fn show_preset_section(ui: &mut egui::Ui, state: &mut AppState, engine_group: &T
             let combo_id = match engine_group {
                 TtsEngineType::Voicevox => "preset_edit_speaker_vox",
                 TtsEngineType::Voiceger => "preset_edit_speaker_vgr",
+                TtsEngineType::Generic => "preset_edit_speaker_gen",
             };
             let speaker_text = speakers_snapshot
                 .iter()
@@ -220,6 +224,7 @@ fn show_preset_section(ui: &mut egui::Ui, state: &mut AppState, engine_group: &T
                 let default_speaker_id = match engine_group {
                     TtsEngineType::Voicevox => state.config.speaker_id,
                     TtsEngineType::Voiceger => 0,
+                    TtsEngineType::Generic => 0,
                 };
                 state.preset_edit_buf = Some(crate::config::SpeakerPreset {
                     name: String::new(),
@@ -303,6 +308,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                     state.config.active_engine = TtsEngineType::Voiceger;
                     let _ = state.config.save();
                 }
+                let is_gen = state.config.active_engine == TtsEngineType::Generic;
+                if ui.radio(is_gen, "その他（VOICEVOX互換）").clicked() && !is_gen {
+                    state.config.active_engine = TtsEngineType::Generic;
+                    let _ = state.config.save();
+                }
             });
 
             ui.add_space(4.0);
@@ -310,11 +320,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 let restart_label = match state.config.active_engine {
                     TtsEngineType::Voicevox => "VOICEVOXを再起動",
                     TtsEngineType::Voiceger => "Voicegerを再起動",
+                    TtsEngineType::Generic => "",
                 };
-                if ui.button(restart_label).clicked() {
+                if !restart_label.is_empty() && ui.button(restart_label).clicked() {
                     match state.config.active_engine {
                         TtsEngineType::Voicevox => state.pending_restart_voicevox = true,
                         TtsEngineType::Voiceger => state.pending_restart_voiceger = true,
+                        TtsEngineType::Generic => {}
                     }
                 }
                 if state.voicevox_launching {
@@ -787,6 +799,51 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         });
 
         }); // Voiceger
+
+        ui.add_space(8.0);
+
+        // ── その他（VOICEVOX互換）エンジン ────────────────────────────────────
+        ui.collapsing("その他（VOICEVOX互換）", |ui| {
+
+        ui.label(
+            egui::RichText::new(
+                "VOICEVOX互換のAPIを持つ外部エンジン（selfvox、Style-Bert-VITS2 等）を使用できます。\n\
+                 エンジン側で /speakers, /audio_query, /synthesis, /version エンドポイントを提供してください。",
+            )
+            .small()
+            .weak(),
+        );
+        ui.add_space(4.0);
+
+        ui.collapsing("接続設定", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("エンジン名:");
+                ui.text_edit_singleline(&mut state.config.generic_engine_name);
+            });
+            ui.label(
+                egui::RichText::new("ステータスバーに表示する名前（例: selfvox）")
+                    .small()
+                    .weak(),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("URL:");
+                ui.text_edit_singleline(&mut state.config.generic_url);
+            });
+            ui.add_space(4.0);
+            if ui.button("接続確認").clicked() {
+                state.pending_health_check = true;
+            }
+            let _ = state.config.save();
+        });
+
+        ui.add_space(8.0);
+
+        ui.collapsing("その他プリセット", |ui| {
+            show_preset_section(ui, state, &TtsEngineType::Generic);
+        });
+
+        }); // その他
 
         ui.add_space(8.0);
 

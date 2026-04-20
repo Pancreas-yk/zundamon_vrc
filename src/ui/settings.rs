@@ -19,7 +19,6 @@ fn show_preset_section(ui: &mut egui::Ui, state: &mut AppState, engine_group: &T
     let mut cancel_clicked = false;
 
     if editing_this {
-        let speakers_snapshot = state.speakers.clone();
         if let Some(buf) = state.preset_edit_buf.as_mut() {
             ui.horizontal(|ui| {
                 ui.label("名前:");
@@ -30,30 +29,47 @@ fn show_preset_section(ui: &mut egui::Ui, state: &mut AppState, engine_group: &T
             });
             ui.add_space(4.0);
 
-            let combo_id = match engine_group {
-                TtsEngineType::Voicevox => "preset_edit_speaker_vox",
-                TtsEngineType::Voiceger => "preset_edit_speaker_vgr",
-            };
-            let speaker_text = speakers_snapshot
-                .iter()
-                .flat_map(|s| s.styles.iter().map(move |st| (s, st)))
-                .find(|(_, st)| st.id == buf.speaker_id)
-                .map(|(s, st)| format!("{} - {}", s.name, st.name))
-                .unwrap_or_else(|| format!("Speaker ID: {}", buf.speaker_id));
-
-            ui.horizontal(|ui| {
-                ui.label("スピーカー:");
-                egui::ComboBox::from_id_salt(combo_id)
-                    .selected_text(&speaker_text)
-                    .show_ui(ui, |ui| {
-                        for speaker in &speakers_snapshot {
-                            for style in &speaker.styles {
-                                let label = format!("{} - {}", speaker.name, style.name);
-                                ui.selectable_value(&mut buf.speaker_id, style.id, &label);
-                            }
-                        }
+            match engine_group {
+                TtsEngineType::Voicevox => {
+                    let speakers_snapshot = state.speakers.clone();
+                    let speaker_text = speakers_snapshot
+                        .iter()
+                        .flat_map(|s| s.styles.iter().map(move |st| (s, st)))
+                        .find(|(_, st)| st.id == buf.speaker_id)
+                        .map(|(s, st)| format!("{} - {}", s.name, st.name))
+                        .unwrap_or_else(|| format!("Speaker ID: {}", buf.speaker_id));
+                    ui.horizontal(|ui| {
+                        ui.label("スピーカー:");
+                        egui::ComboBox::from_id_salt("preset_edit_speaker_vox")
+                            .selected_text(&speaker_text)
+                            .show_ui(ui, |ui| {
+                                for speaker in &speakers_snapshot {
+                                    for style in &speaker.styles {
+                                        let label = format!("{} - {}", speaker.name, style.name);
+                                        ui.selectable_value(&mut buf.speaker_id, style.id, &label);
+                                    }
+                                }
+                            });
                     });
-            });
+                }
+                TtsEngineType::Voiceger => {
+                    let speaker_text = crate::tts::voiceger::VOICEGER_LANGUAGES
+                        .iter()
+                        .find(|(_, _, id)| *id == buf.speaker_id)
+                        .map(|(_, name, _)| *name)
+                        .unwrap_or("日本語");
+                    ui.horizontal(|ui| {
+                        ui.label("言語:");
+                        egui::ComboBox::from_id_salt("preset_edit_speaker_vgr")
+                            .selected_text(speaker_text)
+                            .show_ui(ui, |ui| {
+                                for (_, name, id) in crate::tts::voiceger::VOICEGER_LANGUAGES {
+                                    ui.selectable_value(&mut buf.speaker_id, *id, *name);
+                                }
+                            });
+                    });
+                }
+            }
             ui.add_space(4.0);
 
             // Emotion selector (Voiceger only)
@@ -296,11 +312,27 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 let is_vox = state.config.active_engine == TtsEngineType::Voicevox;
                 if ui.radio(is_vox, "VOICEVOX").clicked() && !is_vox {
                     state.config.active_engine = TtsEngineType::Voicevox;
+                    if state
+                        .active_preset_idx
+                        .and_then(|i| state.config.presets.get(i))
+                        .map(|p| p.engine != TtsEngineType::Voicevox)
+                        .unwrap_or(false)
+                    {
+                        state.active_preset_idx = None;
+                    }
                     let _ = state.config.save();
                 }
                 let is_vgr = state.config.active_engine == TtsEngineType::Voiceger;
                 if ui.radio(is_vgr, "Voiceger").clicked() && !is_vgr {
                     state.config.active_engine = TtsEngineType::Voiceger;
+                    if state
+                        .active_preset_idx
+                        .and_then(|i| state.config.presets.get(i))
+                        .map(|p| p.engine != TtsEngineType::Voiceger)
+                        .unwrap_or(false)
+                    {
+                        state.active_preset_idx = None;
+                    }
                     let _ = state.config.save();
                 }
             });

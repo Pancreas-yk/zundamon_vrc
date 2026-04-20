@@ -257,6 +257,17 @@ fn show_preset_section(ui: &mut egui::Ui, state: &mut AppState, engine_group: &T
     }
 }
 
+fn clear_incompatible_active_preset(state: &mut AppState, target_engine: TtsEngineType) {
+    if state
+        .active_preset_idx
+        .and_then(|i| state.config.presets.get(i))
+        .map(|p| p.engine != target_engine)
+        .unwrap_or(false)
+    {
+        state.active_preset_idx = None;
+    }
+}
+
 pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.heading("設定");
@@ -312,27 +323,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                 let is_vox = state.config.active_engine == TtsEngineType::Voicevox;
                 if ui.radio(is_vox, "VOICEVOX").clicked() && !is_vox {
                     state.config.active_engine = TtsEngineType::Voicevox;
-                    if state
-                        .active_preset_idx
-                        .and_then(|i| state.config.presets.get(i))
-                        .map(|p| p.engine != TtsEngineType::Voicevox)
-                        .unwrap_or(false)
-                    {
-                        state.active_preset_idx = None;
-                    }
+                    clear_incompatible_active_preset(state, TtsEngineType::Voicevox);
                     let _ = state.config.save();
                 }
                 let is_vgr = state.config.active_engine == TtsEngineType::Voiceger;
                 if ui.radio(is_vgr, "Voiceger").clicked() && !is_vgr {
                     state.config.active_engine = TtsEngineType::Voiceger;
-                    if state
-                        .active_preset_idx
-                        .and_then(|i| state.config.presets.get(i))
-                        .map(|p| p.engine != TtsEngineType::Voiceger)
-                        .unwrap_or(false)
-                    {
-                        state.active_preset_idx = None;
-                    }
+                    clear_incompatible_active_preset(state, TtsEngineType::Voiceger);
                     let _ = state.config.save();
                 }
             });

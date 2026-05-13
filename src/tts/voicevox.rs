@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
 
-use super::types::{Speaker, SynthParams, UserDict};
+use super::types::{AudioFormat, EngineCapabilities, Speaker, SynthParams, SynthResult, UserDict};
 use super::TtsEngine;
 
 pub struct VoicevoxEngine {
@@ -79,6 +79,24 @@ impl VoicevoxEngine {
 
 #[async_trait]
 impl TtsEngine for VoicevoxEngine {
+    fn engine_id(&self) -> &'static str {
+        "voicevox"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "VOICEVOX"
+    }
+
+    fn capabilities(&self) -> EngineCapabilities {
+        EngineCapabilities {
+            supports_speaker_list: true,
+            requires_api_key: false,
+            supported_output_formats: vec![AudioFormat::Wav],
+            supports_user_dict: true,
+            launchable: true,
+        }
+    }
+
     async fn list_speakers(&self) -> Result<Vec<Speaker>> {
         let url = format!("{}/speakers", self.base_url);
         let resp = self
@@ -91,7 +109,7 @@ impl TtsEngine for VoicevoxEngine {
         Ok(speakers)
     }
 
-    async fn synthesize(&self, text: &str, params: &SynthParams) -> Result<Vec<u8>> {
+    async fn synthesize(&self, text: &str, params: &SynthParams) -> Result<SynthResult> {
         // Convert half-width ASCII to full-width so VOICEVOX user dictionary entries match
         let fullwidth_text: String = text.chars().map(halfwidth_to_fullwidth).collect();
         // Step 1: Create audio query
@@ -146,7 +164,7 @@ impl TtsEngine for VoicevoxEngine {
             .await
             .context("Failed to read synthesis response")?;
 
-        Ok(wav_bytes.to_vec())
+        Ok(SynthResult::new(wav_bytes.to_vec(), AudioFormat::Wav))
     }
 
     async fn health_check(&self) -> Result<bool> {

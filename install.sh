@@ -20,6 +20,10 @@ INSTALL_ICONS="$HOME/.local/share/icons/hicolor/256x256/apps"
 CONFIG_DIR="$HOME/.config/zundux_tts"
 GITHUB_REPO="Pancreas-yk/zundux-tts"
 
+escape_ere() {
+    printf '%s' "$1" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g'
+}
+
 download_binary() {
     info "最新リリースをダウンロード中..."
 
@@ -33,14 +37,27 @@ download_binary() {
     local binary_url
     binary_url=$(echo "$release_json" | grep -o '"browser_download_url":[[:space:]]*"[^"]*zundux_tts-linux-x86_64"' | grep -o 'https://[^"]*')
 
+    local release_repo
+    release_repo=$(echo "$release_json" | sed -nE 's/.*"assets_url":[[:space:]]*"https:\/\/api\.github\.com\/repos\/([^"]+)\/releases\/[0-9]+\/assets".*/\1/p' | head -n 1)
+
+    local allowed_repo_pattern
+    allowed_repo_pattern="$(escape_ere "$GITHUB_REPO")"
+    if [ -n "$release_repo" ] && [ "$release_repo" != "$GITHUB_REPO" ]; then
+        allowed_repo_pattern="${allowed_repo_pattern}|$(escape_ere "$release_repo")"
+    fi
+
     # Validate URL pattern
-    if ! echo "$binary_url" | grep -qE "^https://github\.com/${GITHUB_REPO}/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/zundux_tts-linux-x86_64$"; then
+    if ! echo "$binary_url" | grep -qE "^https://github\.com/(${allowed_repo_pattern})/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/zundux_tts-linux-x86_64$"; then
         error "ダウンロードURLが不正です: $binary_url"
         return 1
     fi
 
     local checksum_url
     checksum_url=$(echo "$release_json" | grep -o '"browser_download_url":[[:space:]]*"[^"]*SHA256SUMS"' | grep -o 'https://[^"]*')
+    if ! echo "$checksum_url" | grep -qE "^https://github\.com/(${allowed_repo_pattern})/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/SHA256SUMS$"; then
+        error "チェックサムURLが不正です: $checksum_url"
+        return 1
+    fi
 
     local tmpdir
     tmpdir=$(mktemp -d)

@@ -14,13 +14,29 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
     // -- Preset chips (grouped by engine) --
     let chip_rounding = CornerRadius::same(theme.chip_rounding as u8);
     let active_engine = state.config.active_engine.clone();
-    for engine_group in [TtsEngineType::Voicevox, TtsEngineType::Voiceger, TtsEngineType::Generic] {
+    for engine_group in [
+        TtsEngineType::Voicevox,
+        TtsEngineType::Voiceger,
+        TtsEngineType::Generic,
+    ] {
         // Only show presets for the currently active engine
         if engine_group != active_engine {
             continue;
         }
+        let active_gen_name = state.config.active_generic_name().to_string();
         let group_presets: Vec<usize> = (0..state.config.presets.len())
-            .filter(|&i| state.config.presets[i].engine == engine_group)
+            .filter(|&i| {
+                let p = &state.config.presets[i];
+                if p.engine != engine_group {
+                    return false;
+                }
+                // Genericエンジンの場合、アクティブエンジン名でフィルタ
+                if engine_group == TtsEngineType::Generic {
+                    return p.generic_engine_name.is_empty()
+                        || p.generic_engine_name == active_gen_name;
+                }
+                true
+            })
             .collect();
         if group_presets.is_empty() {
             continue;
@@ -28,7 +44,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
         let label = match engine_group {
             TtsEngineType::Voicevox => "VOICEVOX",
             TtsEngineType::Voiceger => "Voiceger",
-            TtsEngineType::Generic => state.config.generic_engine_name.as_str(),
+            TtsEngineType::Generic => state.config.active_generic_name(),
         };
         ui.label(
             egui::RichText::new(label)
@@ -45,16 +61,24 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
                     theme.color(theme.text_secondary)
                 };
                 let btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(&name).color(text_color).size(11.0),
-                    )
-                    .corner_radius(chip_rounding)
-                    .fill(theme.color(theme.chip_background)),
+                    egui::Button::new(egui::RichText::new(&name).color(text_color).size(11.0))
+                        .corner_radius(chip_rounding)
+                        .fill(theme.color(theme.chip_background)),
                 );
                 if btn.clicked() && !is_active {
                     state.active_preset_idx = Some(i);
-                    state.config.speaker_id = state.config.presets[i].speaker_id;
-                    state.config.synth_params = state.config.presets[i].synth_params.clone();
+                    let preset = &state.config.presets[i];
+                    match preset.engine {
+                        TtsEngineType::Voicevox => {
+                            state.config.speaker_id = preset.speaker_id;
+                            state.config.synth_params = preset.synth_params.clone();
+                        }
+                        TtsEngineType::Generic => {
+                            state.config.generic_speaker_id = preset.speaker_id;
+                            state.config.generic_synth_params = preset.synth_params.clone();
+                        }
+                        TtsEngineType::Voiceger => {}
+                    }
                     let _ = state.config.save();
                 }
             }

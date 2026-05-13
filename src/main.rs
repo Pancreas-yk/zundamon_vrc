@@ -7,11 +7,7 @@ mod tts;
 mod ui;
 mod validation;
 
-use config::{AppConfig, TtsEngineType};
-use tts::generic::GenericEngine;
-use tts::voiceger::VoicegerEngine;
-use tts::voicevox::VoicevoxEngine;
-use tts::TtsManager;
+use config::AppConfig;
 
 fn load_icon() -> Option<egui::IconData> {
     let png_bytes = include_bytes!("../assets/design-1.png");
@@ -119,18 +115,6 @@ fn main() -> eframe::Result<()> {
         .build()
         .expect("Failed to create tokio runtime");
 
-    let engine: Box<dyn tts::TtsEngine> = match config.active_engine {
-        TtsEngineType::Voicevox => Box::new(VoicevoxEngine::new(&config.voicevox_url)),
-        TtsEngineType::Voiceger => Box::new(VoicegerEngine::new(
-            &config.voiceger_url,
-            &config.voiceger_ref_audio,
-            &config.voiceger_prompt_text,
-            &config.voiceger_prompt_lang,
-        )),
-        TtsEngineType::Generic => Box::new(GenericEngine::new(&config.generic_url)),
-    };
-    let tts_manager = TtsManager::new(engine);
-
     let handle = rt.handle().clone();
 
     let icon = load_icon();
@@ -157,7 +141,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             setup_japanese_fonts(&cc.egui_ctx);
-            Ok(Box::new(app::ZunduxApp::new(config, tts_manager, handle)))
+            Ok(Box::new(app::ZunduxApp::new(config, handle)))
         }),
     )
 }

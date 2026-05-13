@@ -95,9 +95,16 @@ VRChat のマイク設定で **`ZunduxMic_mic`**（または `ZunduxMic.monitor`
 
 ### VOICEVOX の設定
 
+設定 → エンジン管理 → VOICEVOX:
+- **URL**: 接続先（デフォルト: `http://127.0.0.1:50021`）
+- **実行パス**:
+  - Docker 例: `docker run --rm -p 50021:50021 voicevox/voicevox_engine:nvidia-latest`
+  - ローカル起動スクリプト / バイナリのパス（必要なら引数付きコマンド）
+- **実行パスを空欄**: 外部で起動済みの VOICEVOX に URL 接続のみで使えます（この場合、アプリからの自動起動はスキップされます）
+- **接続テスト**: URL 到達確認に使用
+
 設定 → General → 起動設定:
-- **VOICEVOXを自動起動**: ON にすると起動時に Docker コンテナ / ローカルバイナリを自動起動
-- **VOICEVOX実行パス**: Docker を使う場合は `docker run --rm -p 50021:50021 voicevox/voicevox_engine:nvidia-latest` など
+- **アプリ起動時にVOICEVOXを自動起動**: ON で起動時に自動起動（実行パス設定時のみ）
 
 ### Voiceger の設定
 
@@ -203,10 +210,17 @@ Input タブのテンプレートボタンをクリックで即座に合成・�
 
 ```bash
 curl http://127.0.0.1:50021/version
-docker ps  # Docker の場合
+docker ps                                  # Docker の場合
+ls -l /path/to/voicevox_or_run_script      # ローカル起動の場合
 ```
 
-設定タブで URL とポートを確認し、「VOICEVOXを再起動」ボタンを試してください。
+確認ポイント:
+- **設定場所**: `設定 → エンジン管理 → VOICEVOX`
+- **URL/ポート整合性**: URL (`http://127.0.0.1:50021` など) と起動コマンドの公開ポート（`-p 50021:50021`）を一致させる
+- **URL-only モード**: `実行パス` が空欄なら外部起動前提です。アプリは起動しないため、先に VOICEVOX を起動してから **接続テスト**
+- **Docker 起動確認**: `docker ps` で VOICEVOX コンテナが起動中か確認
+- **ローカル起動確認**: `実行パス` が実在するか確認
+- **起動直後は待つ**: VOICEVOX は起動完了まで時間がかかることがあります。数十秒待ってから再度 **接続テスト**
 
 ### Voiceger で 400 エラーが出る
 

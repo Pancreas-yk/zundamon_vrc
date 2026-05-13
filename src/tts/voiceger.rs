@@ -4,7 +4,7 @@ use reqwest::Client;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::types::{Speaker, Style, SynthParams};
+use super::types::{AudioFormat, EngineCapabilities, Speaker, Style, SynthParams, SynthResult};
 use super::TtsEngine;
 
 /// (display_name, filename) — reference audio files in the `reference/` directory.
@@ -236,6 +236,24 @@ impl VoicegerEngine {
 
 #[async_trait]
 impl TtsEngine for VoicegerEngine {
+    fn engine_id(&self) -> &'static str {
+        "voiceger"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Voiceger"
+    }
+
+    fn capabilities(&self) -> EngineCapabilities {
+        EngineCapabilities {
+            supports_speaker_list: true,
+            requires_api_key: false,
+            supported_output_formats: vec![AudioFormat::Wav],
+            supports_user_dict: false,
+            launchable: true,
+        }
+    }
+
     async fn list_speakers(&self) -> Result<Vec<Speaker>> {
         let styles: Vec<Style> = VOICEGER_LANGUAGES
             .iter()
@@ -252,7 +270,7 @@ impl TtsEngine for VoicegerEngine {
         }])
     }
 
-    async fn synthesize(&self, text: &str, params: &SynthParams) -> Result<Vec<u8>> {
+    async fn synthesize(&self, text: &str, params: &SynthParams) -> Result<SynthResult> {
         let text_lang = Self::lang_for_speaker_id(params.speaker_id);
 
         // Map intonation_scale (0–2, default 1) → temperature (0.5–1.5, default 1).
@@ -354,7 +372,7 @@ impl TtsEngine for VoicegerEngine {
         let needs_volume = (params.volume_scale - 1.0).abs() > 1e-4;
         if needs_pitch || needs_volume {
             match Self::ffmpeg_adjust(&wav, params.pitch_scale, params.volume_scale) {
-                Ok(adjusted) => return Ok(adjusted),
+                Ok(adjusted) => return Ok(SynthResult::new(adjusted, AudioFormat::Wav)),
                 Err(e) => tracing::warn!(
                     "ffmpeg pitch/volume adjustment failed ({}), using raw audio",
                     e
@@ -362,7 +380,7 @@ impl TtsEngine for VoicegerEngine {
             }
         }
 
-        Ok(wav)
+        Ok(SynthResult::new(wav, AudioFormat::Wav))
     }
 
     async fn health_check(&self) -> Result<bool> {

@@ -27,7 +27,7 @@ pub fn play_wav(
         wav_data.len(),
         device_name
     );
-    let result = play_with_paplay(&wav_data, device_name, &cancel);
+    let result = play_with_paplay(&wav_data, Some(device_name), &cancel);
     if let Err(ref pe) = result {
         tracing::error!("paplay playback failed: {}", pe);
     } else {
@@ -37,52 +37,12 @@ pub fn play_wav(
 }
 
 /// Play WAV data on the default output device with cancel support.
-/// Uses paplay (no --device) so it hits the real speakers.
+/// Uses the same ffmpeg→paplay path as virtual-sink playback for format stability.
 fn play_on_default_output_cancellable(
     wav_data: &[u8],
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<()> {
-    use std::io::Write;
-
-    let tmp_path = std::env::temp_dir().join(format!(
-        "zundux_monitor_{}.wav",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos()
-    ));
-    {
-        let mut f =
-            std::fs::File::create(&tmp_path).context("Failed to create monitor temp file")?;
-        f.write_all(wav_data)
-            .context("Failed to write monitor WAV")?;
-    }
-
-    let mut child = Command::new("paplay")
-        .arg(&tmp_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .context("Failed to spawn paplay for monitor")?;
-
-    loop {
-        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_file(&tmp_path);
-            return Ok(());
-        }
-        match child
-            .try_wait()
-            .context("Failed to wait for monitor paplay")?
-        {
-            Some(_) => {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Ok(());
-            }
-            None => std::thread::sleep(std::time::Duration::from_millis(50)),
-        }
-    }
+    play_with_paplay(wav_data, None, cancel)
 }
 
 /// Play an audio file (WAV/MP3/OGG) through a PulseAudio device using ffmpeg+paplay.
@@ -306,7 +266,7 @@ fn play_file_default_output(
 
 fn play_with_paplay(
     wav_data: &[u8],
-    device_name: &str,
+    device_name: Option<&str>,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<()> {
     use std::io::Write;
@@ -326,8 +286,7 @@ fn play_with_paplay(
     }
 
     // Use ffmpeg → paplay pipeline so any sample rate / format is normalised to
-    // 48kHz s16le before hitting the virtual sink.  This matches how play_file
-    // works and avoids PipeWire rejecting non-48kHz PCM on the null sink.
+    // 48kHz s16le before hitting either virtual sink or monitor output.
     let ffmpeg = Command::new("ffmpeg")
         .args(["-i"])
         .arg(&tmp_path)
@@ -354,15 +313,12 @@ fn play_with_paplay(
                 .stdout
                 .take()
                 .context("Failed to get ffmpeg stdout")?;
-            let mut paplay = Command::new("paplay")
-                .args([
-                    "--device",
-                    device_name,
-                    "--raw",
-                    "--format=s16le",
-                    "--rate=48000",
-                    "--channels=1",
-                ])
+            let mut paplay_cmd = Command::new("paplay");
+            if let Some(device_name) = device_name {
+                paplay_cmd.args(["--device", device_name]);
+            }
+            let mut paplay = paplay_cmd
+                .args(["--raw", "--format=s16le", "--rate=48000", "--channels=1"])
                 .stdin(ffmpeg_stdout)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -397,8 +353,11 @@ fn play_with_paplay(
         Err(_) => {
             // ffmpeg not available — fall back to direct paplay (original behaviour).
             tracing::warn!("ffmpeg not found, using direct paplay (format mismatch possible)");
-            let mut child = Command::new("paplay")
-                .args(["--device", device_name])
+            let mut child_cmd = Command::new("paplay");
+            if let Some(device_name) = device_name {
+                child_cmd.args(["--device", device_name]);
+            }
+            let mut child = child_cmd
                 .arg(&tmp_path)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())

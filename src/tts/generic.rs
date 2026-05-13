@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
 
-use super::types::{Speaker, SynthParams};
+use super::types::{AudioFormat, EngineCapabilities, Speaker, SynthParams, SynthResult};
 use super::TtsEngine;
 
 /// VOICEVOX互換APIを持つ外部エンジン（selfvox、Style-Bert-VITS2 等）向けの汎用エンジン。
@@ -23,6 +23,24 @@ impl GenericEngine {
 
 #[async_trait]
 impl TtsEngine for GenericEngine {
+    fn engine_id(&self) -> &'static str {
+        "generic"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Generic"
+    }
+
+    fn capabilities(&self) -> EngineCapabilities {
+        EngineCapabilities {
+            supports_speaker_list: true,
+            requires_api_key: false,
+            supported_output_formats: vec![AudioFormat::Wav],
+            supports_user_dict: false,
+            launchable: false,
+        }
+    }
+
     async fn list_speakers(&self) -> Result<Vec<Speaker>> {
         let url = format!("{}/speakers", self.base_url);
         let resp = self
@@ -38,16 +56,13 @@ impl TtsEngine for GenericEngine {
         Ok(speakers)
     }
 
-    async fn synthesize(&self, text: &str, params: &SynthParams) -> Result<Vec<u8>> {
+    async fn synthesize(&self, text: &str, params: &SynthParams) -> Result<SynthResult> {
         // Step 1: audio_query を作成
         let query_url = format!("{}/audio_query", self.base_url);
         let resp = self
             .client
             .post(&query_url)
-            .query(&[
-                ("text", text),
-                ("speaker", &params.speaker_id.to_string()),
-            ])
+            .query(&[("text", text), ("speaker", &params.speaker_id.to_string())])
             .send()
             .await
             .context("audio_query の作成に失敗しました")?;
@@ -91,7 +106,7 @@ impl TtsEngine for GenericEngine {
             .await
             .context("合成レスポンスの読み取りに失敗しました")?;
 
-        Ok(wav_bytes.to_vec())
+        Ok(SynthResult::new(wav_bytes.to_vec(), AudioFormat::Wav))
     }
 
     async fn health_check(&self) -> Result<bool> {

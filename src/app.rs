@@ -1,9 +1,9 @@
 use crate::audio::AudioManager;
 use crate::config::AppConfig;
+use crate::config::{ENGINE_ID_GENERIC, ENGINE_ID_VOICEGER, ENGINE_ID_VOICEVOX};
 use crate::tts::types::{Speaker, SynthParams};
 use crate::tts::voicevox::VoicevoxEngine;
-use crate::tts::TtsEngine;
-use crate::tts::TtsManager;
+use crate::tts::{EngineRegistry, TtsEngine};
 use crate::ui::Screen;
 
 use anyhow::Context as _;
@@ -26,11 +26,14 @@ enum UiMessage {
         wav: Vec<u8>,
         text: String,
     },
-    SpeakersLoaded(Vec<Speaker>),
-    HealthCheckResult(bool),
-    VoicegerHealthCheckResult(bool),
-    GenericHealthCheckResult(bool),
-    GenericSpeakersLoaded(Vec<Speaker>),
+    SpeakersLoaded {
+        engine_id: String,
+        speakers: Vec<Speaker>,
+    },
+    HealthCheckResult {
+        engine_id: String,
+        ok: bool,
+    },
     Error(String),
     UserDictLoaded(crate::tts::types::UserDict),
     UserDictUpdated,
@@ -39,18 +42,27 @@ enum UiMessage {
     ),
 }
 
+#[derive(Debug, Clone)]
+pub enum EngineCommandConfig {
+    Generic { url: String },
+}
+
 /// Commands from the UI thread to the tokio runtime
 pub enum TtsCommand {
     Synthesize {
         text: String,
         params: SynthParams,
-        engine: crate::config::TtsEngineType,
+        engine_id: String,
+        config: Option<EngineCommandConfig>,
     },
-    LoadSpeakers,
-    HealthCheck,
-    HealthCheckVoiceger,
-    HealthCheckGeneric,
-    LoadGenericSpeakers,
+    LoadSpeakers {
+        engine_id: String,
+        config: Option<EngineCommandConfig>,
+    },
+    HealthCheck {
+        engine_id: String,
+        config: Option<EngineCommandConfig>,
+    },
     LoadUserDict,
     AddUserDictWord {
         surface: String,
@@ -76,6 +88,7 @@ pub struct AppState {
     pub last_error: Option<String>,
     pub pending_send: Option<String>,
     pub pending_health_check: bool,
+    pub pending_health_check_generic: bool,
     pub pending_create_device: bool,
     pub pending_destroy_device: bool,
     pub pending_launch_voicevox: bool,
@@ -129,6 +142,13 @@ pub struct AppState {
     /// the first health check result. We defer the actual spawn until we know
     /// the server is not already running, to avoid "address already in use".
     pub voiceger_auto_launch_pending: bool,
+    /// True when auto_launch_voicevox is enabled and we haven't yet received
+    /// the first health check result. This avoids launching when URL-only
+    /// operation is intended (empty voicevox_path).
+    pub voicevox_auto_launch_pending: bool,
+    /// Set by the UI when the user selects a different engine.
+    /// process_actions() will handle health check, speaker reload, and preset switch.
+    pub pending_switch_engine: Option<crate::config::TtsEngineType>,
 }
 
 const DOCKER_CONTAINER_NAME: &str = "zundux-voicevox";
@@ -158,7 +178,7 @@ const HEALTH_CHECK_INTERVAL_SECS: u64 = 5;
 const HEALTH_CHECK_INTERVAL_LAUNCHING_SECS: u64 = 1;
 
 impl ZunduxApp {
-    pub fn new(config: AppConfig, tts_manager: TtsManager, rt: tokio::runtime::Handle) -> Self {
+    pub fn new(config: AppConfig, rt: tokio::runtime::Handle) -> Self {
         let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>();
         let ui_tx_clone = ui_tx.clone();
         let (tts_tx, tts_rx) = mpsc::channel::<TtsCommand>();
@@ -180,25 +200,38 @@ impl ZunduxApp {
         let voiceger_ref_audio = config.voiceger_ref_audio.clone();
         let voiceger_prompt_text = config.voiceger_prompt_text.clone();
         let voiceger_prompt_lang = config.voiceger_prompt_lang.clone();
-        let generic_url = config.generic_url.clone();
+        let initial_generic_url = config
+            .active_generic_config()
+            .map(|e| e.url.clone())
+            .unwrap_or_default();
         rt.spawn(Self::tts_loop(
-            tts_manager,
             voicevox_url,
             voiceger_url,
             voiceger_ref_audio,
             voiceger_prompt_text,
             voiceger_prompt_lang,
-            generic_url,
             tts_rx,
             ui_tx,
         ));
 
-        // Trigger initial health check + speaker load
-        let _ = tts_tx.send(TtsCommand::HealthCheck);
-        let _ = tts_tx.send(TtsCommand::HealthCheckVoiceger);
-        let _ = tts_tx.send(TtsCommand::HealthCheckGeneric);
-        let _ = tts_tx.send(TtsCommand::LoadSpeakers);
-        let _ = tts_tx.send(TtsCommand::LoadGenericSpeakers);
+        // Trigger initial health checks only — speaker lists will be loaded
+        // when each engine's first health check succeeds (see HealthCheckResult handling).
+        // Sending LoadSpeakers here would fail if the engine isn't running yet and
+        // flash a misleading "スピーカー取得失敗" error.
+        let _ = tts_tx.send(TtsCommand::HealthCheck {
+            engine_id: ENGINE_ID_VOICEVOX.to_string(),
+            config: None,
+        });
+        let _ = tts_tx.send(TtsCommand::HealthCheck {
+            engine_id: ENGINE_ID_VOICEGER.to_string(),
+            config: None,
+        });
+        let _ = tts_tx.send(TtsCommand::HealthCheck {
+            engine_id: ENGINE_ID_GENERIC.to_string(),
+            config: Some(EngineCommandConfig::Generic {
+                url: initial_generic_url,
+            }),
+        });
 
         Self {
             state: AppState {
@@ -215,9 +248,10 @@ impl ZunduxApp {
                 last_error: None,
                 pending_send: None,
                 pending_health_check: false,
+                pending_health_check_generic: false,
                 pending_create_device: false,
                 pending_destroy_device: false,
-                pending_launch_voicevox: auto_launch_voicevox,
+                pending_launch_voicevox: false,
                 pending_launch_voiceger: false,
                 pending_restart_voicevox: false,
                 pending_restart_voiceger: false,
@@ -263,6 +297,8 @@ impl ZunduxApp {
                 preset_edit_buf: None,
                 voiceger_dict_lang: "ja".to_string(),
                 voiceger_auto_launch_pending: auto_launch_voiceger,
+                voicevox_auto_launch_pending: auto_launch_voicevox,
+                pending_switch_engine: None,
             },
             audio_manager,
             ui_rx,
@@ -283,22 +319,69 @@ impl ZunduxApp {
         }
     }
 
+    fn normalize_engine_id(engine_id: &str) -> String {
+        let trimmed = engine_id.trim();
+        if let Some(engine) = crate::config::TtsEngineType::from_engine_id(trimmed) {
+            engine.as_engine_id().to_string()
+        } else {
+            trimmed.to_ascii_lowercase()
+        }
+    }
+
+    fn preset_engine_id(preset: &crate::config::SpeakerPreset) -> String {
+        let engine_id = preset.engine_id.trim();
+        if engine_id.is_empty() {
+            preset.engine.as_engine_id().to_string()
+        } else {
+            engine_id.to_string()
+        }
+    }
+
+    fn active_engine_id(config: &AppConfig) -> String {
+        let engine_id = config.active_engine_id.trim();
+        if engine_id.is_empty() {
+            config.active_engine.as_engine_id().to_string()
+        } else {
+            engine_id.to_string()
+        }
+    }
+
+    fn resolve_engine_for_command(
+        registry: &EngineRegistry,
+        engine_id: &str,
+        config: Option<&EngineCommandConfig>,
+    ) -> Result<Arc<dyn TtsEngine>, String> {
+        use crate::tts::generic::GenericEngine;
+
+        let normalized_engine_id = Self::normalize_engine_id(engine_id);
+        if !registry.contains(&normalized_engine_id) {
+            return Err(format!("未対応エンジン: {}", engine_id));
+        }
+        if normalized_engine_id == ENGINE_ID_GENERIC {
+            if let Some(EngineCommandConfig::Generic { url }) = config {
+                return Ok(Arc::new(GenericEngine::new(url)));
+            }
+        }
+        registry
+            .create(&normalized_engine_id)
+            .ok_or_else(|| format!("エンジン生成失敗: {}", engine_id))
+    }
+
     async fn tts_loop(
-        tts: TtsManager,
         voicevox_url: String,
         voiceger_url: String,
         voiceger_ref_audio: String,
         voiceger_prompt_text: String,
         voiceger_prompt_lang: String,
-        generic_url: String,
         rx: mpsc::Receiver<TtsCommand>,
         tx: mpsc::Sender<UiMessage>,
     ) {
-        use crate::config::TtsEngineType;
-        use crate::tts::generic::GenericEngine;
         use crate::tts::voiceger::VoicegerEngine;
+
         let dict_engine = VoicevoxEngine::new(&voicevox_url);
-        let generic_engine = GenericEngine::new(&generic_url);
+        let mut registry = EngineRegistry::new();
+        let _ = registry.register_instance(VoicevoxEngine::new(&voicevox_url));
+
         let voiceger_engine = VoicegerEngine::new(
             &voiceger_url,
             &voiceger_ref_audio,
@@ -307,53 +390,88 @@ impl ZunduxApp {
         );
         // Eagerly load Zundamon weights so they're ready before the first synthesis.
         voiceger_engine.load_zundamon_weights().await;
+        let _ = registry.register_instance(voiceger_engine);
+        let _ = registry.register_factory(|| {
+            crate::tts::generic::GenericEngine::new(crate::tts::registry::DEFAULT_GENERIC_URL)
+        });
+
         while let Ok(cmd) = rx.recv() {
             match cmd {
-                TtsCommand::Synthesize { text, params, engine } => {
-                    let result = match engine {
-                        TtsEngineType::Voicevox => tts.synthesize(&text, &params).await,
-                        TtsEngineType::Voiceger => voiceger_engine.synthesize(&text, &params).await,
-                        TtsEngineType::Generic => generic_engine.synthesize(&text, &params).await,
+                TtsCommand::Synthesize {
+                    text,
+                    params,
+                    engine_id,
+                    config,
+                } => {
+                    let result = match Self::resolve_engine_for_command(
+                        &registry,
+                        &engine_id,
+                        config.as_ref(),
+                    ) {
+                        Ok(engine) => engine.synthesize(&text, &params).await,
+                        Err(e) => {
+                            let _ = tx.send(UiMessage::Error(format!("合成エラー: {}", e)));
+                            continue;
+                        }
                     };
                     match result {
-                        Ok(wav) => {
-                            let _ = tx.send(UiMessage::WavReady { wav, text });
-                        }
+                        Ok(synth_result) => match synth_result.into_wav_bytes() {
+                            Ok(wav) => {
+                                let _ = tx.send(UiMessage::WavReady { wav, text });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(UiMessage::Error(format!("音声形式エラー: {}", e)));
+                            }
+                        },
                         Err(e) => {
                             let _ = tx.send(UiMessage::Error(format!("合成エラー: {}", e)));
                         }
                     }
                 }
-                TtsCommand::LoadSpeakers => match tts.list_speakers().await {
-                    Ok(speakers) => {
-                        let _ = tx.send(UiMessage::SpeakersLoaded(speakers));
+                TtsCommand::LoadSpeakers { engine_id, config } => {
+                    let normalized_engine_id = Self::normalize_engine_id(&engine_id);
+                    let engine =
+                        match Self::resolve_engine_for_command(&registry, &engine_id, config.as_ref())
+                        {
+                            Ok(engine) => engine,
+                            Err(e) => {
+                                let _ =
+                                    tx.send(UiMessage::Error(format!("スピーカー取得失敗: {}", e)));
+                                continue;
+                            }
+                        };
+                    match engine.list_speakers().await {
+                        Ok(speakers) => {
+                            let _ = tx.send(UiMessage::SpeakersLoaded {
+                                engine_id: normalized_engine_id,
+                                speakers,
+                            });
+                        }
+                        Err(e) => {
+                            if normalized_engine_id != ENGINE_ID_GENERIC {
+                                let _ = tx.send(UiMessage::Error(format!(
+                                    "スピーカー取得失敗: {}",
+                                    e
+                                )));
+                            }
+                        }
                     }
-                    Err(e) => {
-                        let _ = tx.send(UiMessage::Error(format!("スピーカー取得失敗: {}", e)));
-                    }
-                },
-                TtsCommand::HealthCheck => {
-                    // Always check VOICEVOX via dict_engine (VoicevoxEngine) regardless of
-                    // which engine is active. This ensures HealthCheckResult always reflects
-                    // VOICEVOX status, not the active TTS engine.
-                    let ok = dict_engine.health_check().await.unwrap_or(false);
-                    let _ = tx.send(UiMessage::HealthCheckResult(ok));
                 }
-                TtsCommand::HealthCheckVoiceger => {
-                    // Use voiceger_engine.health_check() so weight loading is handled here too.
-                    let ok = voiceger_engine.health_check().await.unwrap_or(false);
-                    let _ = tx.send(UiMessage::VoicegerHealthCheckResult(ok));
+                TtsCommand::HealthCheck { engine_id, config } => {
+                    let normalized_engine_id = Self::normalize_engine_id(&engine_id);
+                    let ok = match Self::resolve_engine_for_command(
+                        &registry,
+                        &engine_id,
+                        config.as_ref(),
+                    ) {
+                        Ok(engine) => engine.health_check().await.unwrap_or(false),
+                        Err(_) => false,
+                    };
+                    let _ = tx.send(UiMessage::HealthCheckResult {
+                        engine_id: normalized_engine_id,
+                        ok,
+                    });
                 }
-                TtsCommand::HealthCheckGeneric => {
-                    let ok = generic_engine.health_check().await.unwrap_or(false);
-                    let _ = tx.send(UiMessage::GenericHealthCheckResult(ok));
-                }
-                TtsCommand::LoadGenericSpeakers => match generic_engine.list_speakers().await {
-                    Ok(speakers) => {
-                        let _ = tx.send(UiMessage::GenericSpeakersLoaded(speakers));
-                    }
-                    Err(_) => {} // エンジンが起動していない場合は無視
-                },
                 TtsCommand::LoadUserDict => match dict_engine.list_user_dict().await {
                     Ok(dict) => {
                         let _ = tx.send(UiMessage::UserDictLoaded(dict));
@@ -401,7 +519,12 @@ impl ZunduxApp {
 
                     // Send OSC chatbox message before playback
                     if self.state.config.osc_enabled {
-                        tracing::info!("OSC send: {:?} → {}:{}", text, self.state.config.osc_address, self.state.config.osc_port);
+                        tracing::info!(
+                            "OSC send: {:?} → {}:{}",
+                            text,
+                            self.state.config.osc_address,
+                            self.state.config.osc_port
+                        );
                         if let Err(e) = crate::osc::send_chatbox(
                             &self.state.config.osc_address,
                             self.state.config.osc_port,
@@ -425,42 +548,102 @@ impl ZunduxApp {
 
                     self.audio_queue.push_back(wav);
                 }
-                UiMessage::SpeakersLoaded(speakers) => {
-                    self.state.speakers = speakers;
-                }
-                UiMessage::HealthCheckResult(ok) => {
-                    let was_disconnected = !self.state.voicevox_connected;
-                    self.state.voicevox_connected = ok;
-                    if ok {
-                        self.state.voicevox_launching = false;
-                        if was_disconnected {
-                            let _ = self.tts_tx.send(TtsCommand::LoadSpeakers);
+                UiMessage::SpeakersLoaded {
+                    engine_id,
+                    speakers,
+                } => {
+                    let normalized_engine_id = Self::normalize_engine_id(&engine_id);
+                    match normalized_engine_id.as_str() {
+                        ENGINE_ID_VOICEVOX => {
+                            self.state.speakers = speakers;
                         }
+                        ENGINE_ID_GENERIC => {
+                            self.state.generic_speakers = speakers;
+                        }
+                        _ => {}
                     }
                 }
-                UiMessage::VoicegerHealthCheckResult(ok) => {
-                    self.state.voiceger_connected = ok;
-                    if ok {
-                        self.state.voiceger_launching = false;
-                        // Server already running — cancel any pending auto-launch
-                        // so we don't spawn a second instance (→ address already in use).
-                        self.state.voiceger_auto_launch_pending = false;
-                    } else if self.state.voiceger_auto_launch_pending {
-                        // First health check came back negative: server not running.
-                        // Now it's safe to start it.
-                        self.state.voiceger_auto_launch_pending = false;
-                        self.state.pending_launch_voiceger = true;
+                UiMessage::HealthCheckResult { engine_id, ok } => {
+                    let normalized_engine_id = Self::normalize_engine_id(&engine_id);
+                    match normalized_engine_id.as_str() {
+                        ENGINE_ID_VOICEVOX => {
+                            let was_disconnected = !self.state.voicevox_connected;
+                            self.state.voicevox_connected = ok;
+                            if ok {
+                                self.state.voicevox_launching = false;
+                                self.state.voicevox_auto_launch_pending = false;
+                                if was_disconnected {
+                                    let _ = self.tts_tx.send(TtsCommand::LoadSpeakers {
+                                        engine_id: ENGINE_ID_VOICEVOX.to_string(),
+                                        config: None,
+                                    });
+                                }
+                            } else if self.state.voicevox_auto_launch_pending {
+                                self.state.voicevox_auto_launch_pending = false;
+                                if !self.state.config.voicevox_path.trim().is_empty() {
+                                    self.launch_voicevox(false);
+                                } else if Self::has_stopped_docker_container() {
+                                    // Path is empty but a previously-created container exists — restart it
+                                    tracing::info!(
+                                        "Auto-starting stopped VOICEVOX Docker container (voicevox_path is empty)"
+                                    );
+                                    match Command::new("docker")
+                                        .args(["start", DOCKER_CONTAINER_NAME])
+                                        .stdout(std::process::Stdio::piped())
+                                        .stderr(std::process::Stdio::piped())
+                                        .spawn()
+                                    {
+                                        Ok(child) => {
+                                            self.voicevox_process = Some(child);
+                                            self.is_docker = true;
+                                            self.state.voicevox_launching = true;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "Failed to auto-start VOICEVOX container: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    tracing::info!(
+                                        "Skipping VOICEVOX auto-launch: voicevox_path is empty and no Docker container found"
+                                    );
+                                }
+                            }
+                        }
+                        ENGINE_ID_VOICEGER => {
+                            self.state.voiceger_connected = ok;
+                            if ok {
+                                self.state.voiceger_launching = false;
+                                // Server already running — cancel any pending auto-launch
+                                // so we don't spawn a second instance (→ address already in use).
+                                self.state.voiceger_auto_launch_pending = false;
+                            } else if self.state.voiceger_auto_launch_pending {
+                                // First health check came back negative: server not running.
+                                // Now it's safe to start it.
+                                self.state.voiceger_auto_launch_pending = false;
+                                self.state.pending_launch_voiceger = true;
+                            }
+                        }
+                        ENGINE_ID_GENERIC => {
+                            let was_disconnected = !self.state.generic_connected;
+                            self.state.generic_connected = ok;
+                            if ok && was_disconnected {
+                                let url = self
+                                    .state
+                                    .config
+                                    .active_generic_config()
+                                    .map(|e| e.url.clone())
+                                    .unwrap_or_default();
+                                let _ = self.tts_tx.send(TtsCommand::LoadSpeakers {
+                                    engine_id: ENGINE_ID_GENERIC.to_string(),
+                                    config: Some(EngineCommandConfig::Generic { url }),
+                                });
+                            }
+                        }
+                        _ => {}
                     }
-                }
-                UiMessage::GenericHealthCheckResult(ok) => {
-                    let was_disconnected = !self.state.generic_connected;
-                    self.state.generic_connected = ok;
-                    if ok && was_disconnected {
-                        let _ = self.tts_tx.send(TtsCommand::LoadGenericSpeakers);
-                    }
-                }
-                UiMessage::GenericSpeakersLoaded(speakers) => {
-                    self.state.generic_speakers = speakers;
                 }
                 UiMessage::Error(err) => {
                     self.state.is_synthesizing = false;
@@ -492,9 +675,24 @@ impl ZunduxApp {
         };
         if self.last_health_check.elapsed().as_secs() >= interval {
             self.last_health_check = Instant::now();
-            let _ = self.tts_tx.send(TtsCommand::HealthCheck);
-            let _ = self.tts_tx.send(TtsCommand::HealthCheckVoiceger);
-            let _ = self.tts_tx.send(TtsCommand::HealthCheckGeneric);
+            let _ = self.tts_tx.send(TtsCommand::HealthCheck {
+                engine_id: ENGINE_ID_VOICEVOX.to_string(),
+                config: None,
+            });
+            let _ = self.tts_tx.send(TtsCommand::HealthCheck {
+                engine_id: ENGINE_ID_VOICEGER.to_string(),
+                config: None,
+            });
+            let generic_url = self
+                .state
+                .config
+                .active_generic_config()
+                .map(|e| e.url.clone())
+                .unwrap_or_default();
+            let _ = self.tts_tx.send(TtsCommand::HealthCheck {
+                engine_id: ENGINE_ID_GENERIC.to_string(),
+                config: Some(EngineCommandConfig::Generic { url: generic_url }),
+            });
         }
     }
 
@@ -520,79 +718,113 @@ impl ZunduxApp {
             if text.is_empty() {
                 // Nothing left to speak after stripping
             } else {
-                let active_preset = self.state.active_preset_idx
+                let active_preset = self
+                    .state
+                    .active_preset_idx
                     .and_then(|i| self.state.config.presets.get(i));
-                let engine = active_preset
-                    .map(|p| p.engine.clone())
-                    .unwrap_or(self.state.config.active_engine.clone());
+                let engine_id = active_preset
+                    .map(Self::preset_engine_id)
+                    .unwrap_or_else(|| Self::active_engine_id(&self.state.config));
+                let normalized_engine_id = Self::normalize_engine_id(&engine_id);
+                let is_voiceger = normalized_engine_id == ENGINE_ID_VOICEGER;
+                let is_generic = normalized_engine_id == ENGINE_ID_GENERIC;
 
                 // Voiceger requires a preset — language cannot be inferred without one.
-                let voiceger_no_preset = engine == crate::config::TtsEngineType::Voiceger
-                    && active_preset.map(|p| p.engine != crate::config::TtsEngineType::Voiceger).unwrap_or(true);
+                let voiceger_no_preset = is_voiceger
+                    && active_preset
+                        .map(|p| Self::normalize_engine_id(&Self::preset_engine_id(p)) != ENGINE_ID_VOICEGER)
+                        .unwrap_or(true);
                 if voiceger_no_preset {
-                    self.state.last_error = Some(
-                        "Voicegerにはプリセットの選択が必要です。".to_string()
-                    );
+                    self.state.last_error =
+                        Some("Voicegerにはプリセットの選択が必要です。".to_string());
                     // Skip synthesis — fall through to remaining actions
                 } else {
-
-                let params = active_preset
-                    .map(|p| {
-                        // Voiceger ref override priority:
-                        // 1) per-preset custom WAV
-                        // 2) per-preset emotion WAV
-                        // 3) global voiceger_ref_audio (engine default)
-                        let aux_ref_audio = if p.engine == crate::config::TtsEngineType::Voiceger {
-                            let preset_ref = p.voiceger_ref_audio_override.trim();
-                            if !preset_ref.is_empty() {
-                                Some(preset_ref.to_string())
-                            } else if !p.voiceger_emotion.is_empty() {
-                                crate::tts::voiceger::VOICEGER_EMOTIONS
-                                    .iter()
-                                    .find(|(name, _)| *name == p.voiceger_emotion)
-                                    .and_then(|(_, filename)| {
-                                        // Derive reference directory from global voiceger_ref_audio.
-                                        let base = std::path::Path::new(&self.state.config.voiceger_ref_audio)
+                    let params = active_preset
+                        .map(|p| {
+                            // Voiceger ref override priority:
+                            // 1) per-preset custom WAV
+                            // 2) per-preset emotion WAV
+                            // 3) global voiceger_ref_audio (engine default)
+                            let aux_ref_audio = if p.engine
+                                == crate::config::TtsEngineType::Voiceger
+                            {
+                                let preset_ref = p.voiceger_ref_audio_override.trim();
+                                if !preset_ref.is_empty() {
+                                    Some(preset_ref.to_string())
+                                } else if !p.voiceger_emotion.is_empty() {
+                                    crate::tts::voiceger::VOICEGER_EMOTIONS
+                                        .iter()
+                                        .find(|(name, _)| *name == p.voiceger_emotion)
+                                        .and_then(|(_, filename)| {
+                                            // Derive reference directory from global voiceger_ref_audio.
+                                            let base = std::path::Path::new(
+                                                &self.state.config.voiceger_ref_audio,
+                                            )
                                             .parent()?;
-                                        Some(base.join(filename).to_string_lossy().into_owned())
-                                    })
+                                            Some(base.join(filename).to_string_lossy().into_owned())
+                                        })
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
+                            };
+                            SynthParams {
+                                speaker_id: p.speaker_id,
+                                speed_scale: p.synth_params.speed_scale,
+                                pitch_scale: p.synth_params.pitch_scale,
+                                intonation_scale: p.synth_params.intonation_scale,
+                                volume_scale: p.synth_params.volume_scale,
+                                aux_ref_audio,
+                                voiceger_ref_free: self.state.config.voiceger_ref_free,
                             }
-                        } else {
-                            None
-                        };
-                        SynthParams {
-                            speaker_id: p.speaker_id,
-                            speed_scale: p.synth_params.speed_scale,
-                            pitch_scale: p.synth_params.pitch_scale,
-                            intonation_scale: p.synth_params.intonation_scale,
-                            volume_scale: p.synth_params.volume_scale,
-                            aux_ref_audio,
-                            voiceger_ref_free: self.state.config.voiceger_ref_free,
-                        }
-                    })
-                    .unwrap_or_else(|| SynthParams::from_config(&self.state.config));
-                // Apply Voiceger client-side pronunciation dictionary (per language)
-                let text = if engine == crate::config::TtsEngineType::Voiceger {
-                    let lang = crate::tts::voiceger::VoicegerEngine::lang_for_speaker_id(params.speaker_id);
-                    // Warn if detected language doesn't match the preset's expected language
-                    if let Some(detected) = Self::detect_text_lang(&text) {
-                        if !Self::lang_compatible(lang, detected) {
-                            self.state.last_error = Some(format!(
+                        })
+                        .unwrap_or_else(|| {
+                            if is_generic {
+                                SynthParams::from_config_generic(&self.state.config)
+                            } else {
+                                SynthParams::from_config(&self.state.config)
+                            }
+                        });
+                    // Apply Voiceger client-side pronunciation dictionary (per language)
+                    let text = if is_voiceger {
+                        let lang = crate::tts::voiceger::VoicegerEngine::lang_for_speaker_id(
+                            params.speaker_id,
+                        );
+                        // Warn if detected language doesn't match the preset's expected language
+                        if let Some(detected) = Self::detect_text_lang(&text) {
+                            if !Self::lang_compatible(lang, detected) {
+                                self.state.last_error = Some(format!(
                                 "言語の不一致: プリセットは「{}」ですが、テキストは「{}」のようです。",
                                 Self::lang_display(lang),
                                 Self::lang_display(detected),
                             ));
+                            }
                         }
-                    }
-                    Self::apply_voiceger_dict(&text, &self.state.config.voiceger_dict, lang)
-                } else {
-                    text
-                };
-                self.state.is_synthesizing = true;
-                // Don't clear last_error here — a lang-mismatch warning may have just been set.
-                let _ = self.tts_tx.send(TtsCommand::Synthesize { text, params, engine });
+                        Self::apply_voiceger_dict(&text, &self.state.config.voiceger_dict, lang)
+                    } else {
+                        text
+                    };
+                    self.state.is_synthesizing = true;
+                    // Don't clear last_error here — a lang-mismatch warning may have just been set.
+                    let config = if is_generic {
+                        Some(EngineCommandConfig::Generic {
+                            url: self
+                                .state
+                                .config
+                                .active_generic_config()
+                                .map(|e| e.url.clone())
+                                .unwrap_or_default(),
+                        })
+                    } else {
+                        None
+                    };
+                    let _ = self.tts_tx.send(TtsCommand::Synthesize {
+                        text,
+                        params,
+                        engine_id,
+                        config,
+                    });
                 } // end else (voiceger_no_preset)
             }
         }
@@ -600,13 +832,100 @@ impl ZunduxApp {
         // Handle health check
         if self.state.pending_health_check {
             self.state.pending_health_check = false;
-            let _ = self.tts_tx.send(TtsCommand::HealthCheck);
+            let _ = self.tts_tx.send(TtsCommand::HealthCheck {
+                engine_id: ENGINE_ID_VOICEVOX.to_string(),
+                config: None,
+            });
+        }
+
+        // Handle generic engine health check
+        if self.state.pending_health_check_generic {
+            self.state.pending_health_check_generic = false;
+            let url = self
+                .state
+                .config
+                .active_generic_config()
+                .map(|e| e.url.clone())
+                .unwrap_or_default();
+            let _ = self.tts_tx.send(TtsCommand::HealthCheck {
+                engine_id: ENGINE_ID_GENERIC.to_string(),
+                config: Some(EngineCommandConfig::Generic { url }),
+            });
+        }
+
+        // Handle engine switch
+        if let Some(new_engine) = self.state.pending_switch_engine.take() {
+            self.state.config.active_engine = new_engine.clone();
+            self.state.config.active_engine_id = new_engine.as_engine_id().to_string();
+            let _ = self.state.config.save();
+
+            // Trigger health check + speaker reload for the new engine
+            match &new_engine {
+                crate::config::TtsEngineType::Voicevox => {
+                    self.state.pending_health_check = true;
+                    let _ = self.tts_tx.send(TtsCommand::LoadSpeakers {
+                        engine_id: ENGINE_ID_VOICEVOX.to_string(),
+                        config: None,
+                    });
+                }
+                crate::config::TtsEngineType::Voiceger => {
+                    let _ = self.tts_tx.send(TtsCommand::HealthCheck {
+                        engine_id: ENGINE_ID_VOICEGER.to_string(),
+                        config: None,
+                    });
+                }
+                crate::config::TtsEngineType::Generic => {
+                    self.state.pending_health_check_generic = true;
+                    let url = self
+                        .state
+                        .config
+                        .active_generic_config()
+                        .map(|e| e.url.clone())
+                        .unwrap_or_default();
+                    let _ = self.tts_tx.send(TtsCommand::LoadSpeakers {
+                        engine_id: ENGINE_ID_GENERIC.to_string(),
+                        config: Some(EngineCommandConfig::Generic { url }),
+                    });
+                }
+            }
+
+            // Auto-select first preset matching the new engine
+            let new_preset_idx = self.state.config.presets.iter().position(|p| {
+                if p.engine != new_engine {
+                    return false;
+                }
+                // For Generic, also match the active engine name
+                if new_engine == crate::config::TtsEngineType::Generic {
+                    return p.generic_engine_name.is_empty()
+                        || p.generic_engine_name == self.state.config.active_generic_name();
+                }
+                true
+            });
+            self.state.active_preset_idx = new_preset_idx;
+
+            // Apply the selected preset's params to config
+            if let Some(idx) = new_preset_idx {
+                let preset = &self.state.config.presets[idx];
+                match &new_engine {
+                    crate::config::TtsEngineType::Voicevox => {
+                        self.state.config.speaker_id = preset.speaker_id;
+                        self.state.config.synth_params = preset.synth_params.clone();
+                    }
+                    crate::config::TtsEngineType::Generic => {
+                        self.state.config.generic_speaker_id = preset.speaker_id;
+                        self.state.config.generic_synth_params = preset.synth_params.clone();
+                    }
+                    crate::config::TtsEngineType::Voiceger => {}
+                }
+                let _ = self.state.config.save();
+            }
         }
 
         // Handle VOICEVOX launch
         if self.state.pending_launch_voicevox {
             self.state.pending_launch_voicevox = false;
-            self.launch_voicevox();
+            self.state.voicevox_auto_launch_pending = false;
+            self.launch_voicevox(true);
         }
 
         // Handle Voiceger launch
@@ -615,15 +934,68 @@ impl ZunduxApp {
             self.launch_voiceger();
         }
 
-        // Handle VOICEVOX restart
+        // Handle VOICEVOX restart — branch by mode
         if self.state.pending_restart_voicevox {
             self.state.pending_restart_voicevox = false;
-            if let Some(mut proc) = self.voicevox_process.take() {
-                let _ = proc.kill();
+            let path = self.state.config.voicevox_path.trim().to_string();
+
+            if path.is_empty() {
+                // URL-only mode: try to restart a stopped Docker container if one exists,
+                // otherwise just reconnect via health check.
+                if Self::is_voicevox_docker_running() {
+                    tracing::info!("VOICEVOX Docker container already running, reconnecting");
+                    self.state.voicevox_connected = false;
+                    let _ = self.tts_tx.send(TtsCommand::HealthCheck {
+                        engine_id: ENGINE_ID_VOICEVOX.to_string(),
+                        config: None,
+                    });
+                } else if Self::has_stopped_docker_container() {
+                    tracing::info!(
+                        "Restarting stopped VOICEVOX container (voicevox_path is empty)"
+                    );
+                    self.state.voicevox_connected = false;
+                    match Command::new("docker")
+                        .args(["start", DOCKER_CONTAINER_NAME])
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                    {
+                        Ok(child) => {
+                            self.voicevox_process = Some(child);
+                            self.is_docker = true;
+                            self.state.voicevox_launching = true;
+                            self.state.last_error = None;
+                        }
+                        Err(e) => {
+                            self.state.last_error =
+                                Some(format!("Dockerコンテナ再起動失敗: {}", e));
+                        }
+                    }
+                } else {
+                    // No container at all — just try to reconnect
+                    self.state.voicevox_connected = false;
+                    let _ = self.tts_tx.send(TtsCommand::HealthCheck {
+                        engine_id: ENGINE_ID_VOICEVOX.to_string(),
+                        config: None,
+                    });
+                    tracing::info!("VOICEVOX reconnect (URL-only mode, no Docker container)");
+                }
+            } else {
+                // Docker mode: stop the container properly before relaunching
+                if self.is_docker && Self::is_voicevox_docker_running() {
+                    tracing::info!("Stopping VOICEVOX Docker container for restart");
+                    let _ = Command::new("docker")
+                        .args(["stop", "-t", "3", DOCKER_CONTAINER_NAME])
+                        .status();
+                }
+                if let Some(mut proc) = self.voicevox_process.take() {
+                    let _ = proc.kill();
+                }
+                self.state.voicevox_connected = false;
+                self.state.voicevox_launching = false;
+                self.state.voicevox_auto_launch_pending = false;
+                self.launch_voicevox(true);
             }
-            self.state.voicevox_connected = false;
-            self.state.voicevox_launching = false;
-            self.launch_voicevox();
         }
 
         // Handle Voiceger restart
@@ -986,7 +1358,10 @@ impl ZunduxApp {
             return true;
         }
         // zh and yue are visually indistinguishable by simple char analysis
-        matches!((preset_lang, detected), ("zh", "yue") | ("yue", "zh") | ("zh", "zh") | ("yue", "yue"))
+        matches!(
+            (preset_lang, detected),
+            ("zh", "yue") | ("yue", "zh") | ("zh", "zh") | ("yue", "yue")
+        )
     }
 
     fn lang_display(lang: &str) -> &'static str {
@@ -1010,7 +1385,10 @@ impl ZunduxApp {
             Some(d) if !d.is_empty() => d,
             _ => return text.to_string(),
         };
-        let mut entries: Vec<(&str, &str)> = lang_dict.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut entries: Vec<(&str, &str)> = lang_dict
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
         let mut result = String::with_capacity(text.len());
@@ -1018,7 +1396,8 @@ impl ZunduxApp {
         let mut i = 0;
         while i < chars.len() {
             let remaining: String = chars[i..].iter().collect();
-            if let Some((surface, reading)) = entries.iter().find(|(s, _)| remaining.starts_with(s)) {
+            if let Some((surface, reading)) = entries.iter().find(|(s, _)| remaining.starts_with(s))
+            {
                 result.push_str(reading);
                 i += surface.chars().count();
             } else {
@@ -1066,10 +1445,18 @@ impl ZunduxApp {
             .unwrap_or(false)
     }
 
-    fn launch_voicevox(&mut self) {
+    fn launch_voicevox(&mut self, user_requested: bool) {
         let path = self.state.config.voicevox_path.trim().to_string();
         if path.is_empty() {
-            tracing::warn!("voicevox_path is empty, cannot launch");
+            self.state.voicevox_launching = false;
+            if user_requested {
+                self.state.last_error = Some(
+                    "VOICEVOX実行パスが未設定です。URL接続のみで使う場合は「接続テスト」を使ってください。ローカル起動には実行パスを設定してください。"
+                        .to_string(),
+                );
+            } else {
+                tracing::info!("Skipping VOICEVOX launch: voicevox_path is empty");
+            }
             return;
         }
 
@@ -1163,13 +1550,17 @@ impl ZunduxApp {
         let words = match shell_words::split(&path) {
             Ok(w) if !w.is_empty() => w,
             _ => {
-                self.state.last_error = Some("Voiceger起動コマンドのパースに失敗しました".to_string());
+                self.state.last_error =
+                    Some("Voiceger起動コマンドのパースに失敗しました".to_string());
                 return;
             }
         };
 
         // Run from the GPT-SoVITS directory so relative imports work
-        let workdir = self.state.config.voiceger_base_dir()
+        let workdir = self
+            .state
+            .config
+            .voiceger_base_dir()
             .map(|d| d.join("GPT-SoVITS"))
             .filter(|d| d.exists());
 
@@ -1183,8 +1574,10 @@ impl ZunduxApp {
             Some(f) => {
                 let f2 = f.try_clone().unwrap_or_else(|_| {
                     std::fs::OpenOptions::new()
-                        .create(true).append(true)
-                        .open("/tmp/zundux_voiceger.log").unwrap()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/zundux_voiceger.log")
+                        .unwrap()
                 });
                 (std::process::Stdio::from(f), std::process::Stdio::from(f2))
             }
@@ -1322,10 +1715,30 @@ impl ZunduxApp {
             }
         }
 
+        // Write server output to a log file for debugging.
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/zundux_voicevox.log")
+            .ok();
+        let (stdout_io, stderr_io) = match log_file {
+            Some(f) => {
+                let f2 = f.try_clone().unwrap_or_else(|_| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/zundux_voicevox.log")
+                        .unwrap()
+                });
+                (std::process::Stdio::from(f), std::process::Stdio::from(f2))
+            }
+            None => (std::process::Stdio::null(), std::process::Stdio::null()),
+        };
+
         let child = std::process::Command::new(&words[0])
             .args(&words[1..])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(stdout_io)
+            .stderr(stderr_io)
             .spawn()
             .context("Failed to spawn voicevox process")?;
 
@@ -1500,7 +1913,7 @@ impl eframe::App for ZunduxApp {
                         crate::config::TtsEngineType::Voicevox => "VOICEVOX",
                         crate::config::TtsEngineType::Voiceger => "Voiceger",
                         crate::config::TtsEngineType::Generic => {
-                            self.state.config.generic_engine_name.as_str()
+                            self.state.config.active_generic_name()
                         }
                     };
                     let (connected, launching) = match self.state.config.active_engine {
@@ -1553,10 +1966,15 @@ impl eframe::App for ZunduxApp {
                             .color(theme.color(theme.text_muted)),
                     );
                     // Square hit area
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(handle_size, handle_size), egui::Sense::drag());
-                    ui.painter()
-                        .rect_filled(rect, egui::CornerRadius::ZERO, theme.color(theme.resize_handle_background));
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(handle_size, handle_size),
+                        egui::Sense::drag(),
+                    );
+                    ui.painter().rect_filled(
+                        rect,
+                        egui::CornerRadius::ZERO,
+                        theme.color(theme.resize_handle_background),
+                    );
                     ui.painter().rect_stroke(
                         rect,
                         egui::CornerRadius::ZERO,
@@ -1570,9 +1988,7 @@ impl eframe::App for ZunduxApp {
                         egui::FontId::proportional(12.0),
                         theme.color(theme.text_muted),
                     );
-                    if response.contains_pointer()
-                        && ui.input(|i| i.pointer.primary_pressed())
-                    {
+                    if response.contains_pointer() && ui.input(|i| i.pointer.primary_pressed()) {
                         ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
                             egui::ResizeDirection::SouthEast,
                         ));
